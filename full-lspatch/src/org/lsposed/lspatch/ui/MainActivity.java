@@ -56,9 +56,13 @@ public class MainActivity extends Activity {
 
     private File customKeyStoreFile;
     private String customKeyPass = "";
+    private String customKeyAlias = "";
+    private String customKeyAliasPass = "";
     private PrivateKey customPrivateKey;
     private X509Certificate customCert;
-    private EditText etKeyPass;
+    private EditText etKeyPass, etKeyAliasPass;
+    private TextView tvKeyAliasBtn;
+    private List<String> availableAliases = new ArrayList<>();
     private int sigBypassLevel = 0;
     private boolean debuggable = false;
     private boolean overrideVersion = false;
@@ -91,6 +95,8 @@ public class MainActivity extends Activity {
             if (f.exists()) {
                 customKeyStoreFile = f;
                 customKeyPass = prefs.getString("custom_key_pass", "");
+                customKeyAlias = prefs.getString("custom_key_alias", "");
+                customKeyAliasPass = prefs.getString("custom_key_alias_pass", "");
             }
         }
         sigBypassLevel = prefs.getInt("sig_bypass_level", 0);
@@ -175,9 +181,10 @@ public class MainActivity extends Activity {
         tvLog.setMovementMethod(new ScrollingMovementMethod());
         root.addView(tvLog, matchW());
 
-        // 尝试恢复已保存的密钥
+        // 尝试恢复已保存的密钥 (两步: 解锁 keystore + 提取私钥)
         if (customKeyStoreFile != null && !customKeyPass.isEmpty()) {
-            loadCustomKey();
+            tryLoadKeystore();
+            if (!customKeyAlias.isEmpty()) tryExtractKey();
             updateKeyStatus();
         }
     }
@@ -228,6 +235,7 @@ public class MainActivity extends Activity {
     private void addCustomKeyCard(LinearLayout parent) {
         LinearLayout card = cardBg();
 
+        // 1. 导入按钮
         Button btnImport = new Button(this);
         btnImport.setText("导入密钥库 (.jks/.p12)");
         btnImport.setTextSize(13);
@@ -247,13 +255,17 @@ public class MainActivity extends Activity {
         btnClear.setOnClickListener(v -> clearCustomKey());
         card.addView(btnClear, matchW());
 
-        addSpace(card, dp(6));
+        // 2. 密钥库密码
+        addSpace(card, dp(8));
+        TextView lbl1 = label("密钥库密码:", 12, 0xFF666666);
+        lbl1.setPadding(0, 0, 0, dp(4));
+        card.addView(lbl1);
+
         etKeyPass = new EditText(this);
-        etKeyPass.setHint("密钥库密码");
+        etKeyPass.setHint("输入密钥库 (.jks/.p12) 的密码");
         etKeyPass.setTextSize(13);
         etKeyPass.setPadding(dp(10), dp(8), dp(10), dp(8));
         etKeyPass.setBackgroundColor(0xFFF0F0F0);
-        // 恢复已保存的密码
         if (customKeyStoreFile != null && !customKeyPass.isEmpty()) {
             etKeyPass.setText(customKeyPass);
         }
@@ -263,18 +275,58 @@ public class MainActivity extends Activity {
             @Override public void afterTextChanged(Editable s) {
                 customKeyPass = s.toString();
                 if (customKeyStoreFile != null && !customKeyPass.isEmpty()) {
-                    loadCustomKey();
-                    if (customPrivateKey != null) {
-                        // 加载成功，保存密码
-                        prefs.edit().putString("custom_key_pass", customKeyPass).apply();
-                    }
+                    tryLoadKeystore(); // 只加载 keystore，列出别名，不提取私钥
                 }
             }
         });
         card.addView(etKeyPass, matchW());
 
+        // 3. 别名选择
+        addSpace(card, dp(8));
+        TextView lbl2 = label("密钥别名:", 12, 0xFF666666);
+        lbl2.setPadding(0, 0, 0, dp(4));
+        card.addView(lbl2);
+
+        tvKeyAliasBtn = new TextView(this);
+        tvKeyAliasBtn.setTextSize(13);
+        tvKeyAliasBtn.setTextColor(0xFF2196F3);
+        tvKeyAliasBtn.setBackgroundColor(0xFFF0F0F0);
+        tvKeyAliasBtn.setPadding(dp(12), dp(10), dp(12), dp(10));
+        tvKeyAliasBtn.setGravity(Gravity.CENTER_VERTICAL);
+        tvKeyAliasBtn.setText("(先输入密钥库密码)");
+        tvKeyAliasBtn.setOnClickListener(v -> showAliasPicker());
+        card.addView(tvKeyAliasBtn, matchW());
+
+        // 4. 别名密码 (key password)
+        addSpace(card, dp(8));
+        TextView lbl3 = label("别名密码 (留空则使用密钥库密码):", 12, 0xFF666666);
+        lbl3.setPadding(0, 0, 0, dp(4));
+        card.addView(lbl3);
+
+        etKeyAliasPass = new EditText(this);
+        etKeyAliasPass.setHint("别名/密钥条目的单独密码");
+        etKeyAliasPass.setTextSize(13);
+        etKeyAliasPass.setPadding(dp(10), dp(8), dp(10), dp(8));
+        etKeyAliasPass.setBackgroundColor(0xFFF0F0F0);
+        if (customKeyStoreFile != null && !customKeyAliasPass.isEmpty()) {
+            etKeyAliasPass.setText(customKeyAliasPass);
+        }
+        etKeyAliasPass.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
+            @Override public void onTextChanged(CharSequence s, int a, int b, int c) {}
+            @Override public void afterTextChanged(Editable s) {
+                customKeyAliasPass = s.toString();
+                if (customKeyStoreFile != null && !customKeyAlias.isEmpty()) {
+                    tryExtractKey(); // 提取私钥
+                }
+            }
+        });
+        card.addView(etKeyAliasPass, matchW());
+
+        // 5. 状态
+        addSpace(card, dp(6));
         tvKeyStatus = label("使用内置签名密钥", 11, 0xFF888888);
-        tvKeyStatus.setPadding(0, dp(6), 0, 0);
+        tvKeyStatus.setPadding(0, dp(4), 0, 0);
         card.addView(tvKeyStatus);
 
         updateKeyStatus();
@@ -411,13 +463,20 @@ public class MainActivity extends Activity {
                 if (saved == null) { toast("无法读取"); return; }
                 customKeyStoreFile = saved;
                 customKeyPass = "";
+                customKeyAlias = "";
+                customKeyAliasPass = "";
                 customPrivateKey = null;
                 customCert = null;
-                prefs.edit().putString("custom_key_path", saved.getAbsolutePath()).remove("custom_key_pass").apply();
-                // 清空密码框，提示用户输入密码
+                availableAliases.clear();
+                prefs.edit().putString("custom_key_path", saved.getAbsolutePath())
+                    .remove("custom_key_pass").remove("custom_key_alias").remove("custom_key_alias_pass").apply();
                 if (etKeyPass != null) etKeyPass.setText("");
+                if (etKeyAliasPass != null) etKeyAliasPass.setText("");
+                if (tvKeyAliasBtn != null) { tvKeyAliasBtn.setText("(先输入密钥库密码)"); tvKeyAliasBtn.setTextColor(0xFF2196F3); }
                 log("✓ 密钥文件已选择: " + saved.getName());
-                log("  请在下方输入密码");
+                log("  1. 输入密钥库密码");
+                log("  2. 选择别名");
+                log("  3. 输入别名密码 (如需要)");
                 updateKeyStatus();
                 return;
             }
@@ -461,8 +520,10 @@ public class MainActivity extends Activity {
 
     // ==================== 自定义密钥 ====================
 
-    private void loadCustomKey() {
-        if (customKeyStoreFile == null || !customKeyStoreFile.exists()) { customPrivateKey = null; customCert = null; return; }
+    /** Step 1: 尝试用密钥库密码加载 keystore，列出所有别名 */
+    private void tryLoadKeystore() {
+        availableAliases.clear();
+        if (customKeyStoreFile == null || !customKeyStoreFile.exists()) return;
         try {
             String fn = customKeyStoreFile.getName().toLowerCase();
             String type = (fn.endsWith(".p12") || fn.endsWith(".pkcs12")) ? "PKCS12" : "JKS";
@@ -470,23 +531,109 @@ public class MainActivity extends Activity {
             FileInputStream fis = new FileInputStream(customKeyStoreFile);
             ks.load(fis, customKeyPass.toCharArray());
             fis.close();
+
             java.util.Enumeration<String> aliases = ks.aliases();
-            String alias = null;
-            while (aliases.hasMoreElements()) { String a = aliases.nextElement(); if (ks.isKeyEntry(a)) { alias = a; break; } }
-            if (alias == null) throw new Exception("密钥库中没有私钥条目");
-            customPrivateKey = (PrivateKey) ks.getKey(alias, customKeyPass.toCharArray());
-            customCert = (X509Certificate) ks.getCertificate(alias);
-            log("✓ 自定义密钥加载成功: " + alias);
+            while (aliases.hasMoreElements()) {
+                String a = aliases.nextElement();
+                if (ks.isKeyEntry(a)) availableAliases.add(a);
+            }
+            if (availableAliases.isEmpty()) {
+                log("✗ 密钥库中没有私钥条目");
+                tvKeyAliasBtn.setText("(无可用别名)");
+                return;
+            }
+            // 自动选择第一个别名（如果还没选或已选的不存在）
+            if (customKeyAlias.isEmpty() || !availableAliases.contains(customKeyAlias)) {
+                customKeyAlias = availableAliases.get(0);
+            }
+            tvKeyAliasBtn.setText("> " + customKeyAlias + " (点击切换)");
+            tvKeyAliasBtn.setTextColor(0xFF2196F3);
+            log("✓ 密钥库已解锁，别名: " + customKeyAlias + " (共" + availableAliases.size() + "个)");
+            prefs.edit().putString("custom_key_pass", customKeyPass).apply();
+
+            // 尝试提取私钥
+            tryExtractKey();
         } catch (Exception e) {
-            customPrivateKey = null; customCert = null;
-            log("✗ 密钥加载失败: " + e.getMessage());
+            log("✗ 密钥库加载失败: " + e.getMessage());
+            tvKeyAliasBtn.setText("(密钥库密码错误?)");
+            tvKeyAliasBtn.setTextColor(0xFFFF9800);
+        }
+    }
+
+    /** Step 2: 显示别名选择对话框 */
+    private void showAliasPicker() {
+        if (availableAliases.isEmpty()) {
+            toast("请先输入正确的密钥库密码");
+            return;
+        }
+        String[] items = availableAliases.toArray(new String[0]);
+        new AlertDialog.Builder(this)
+            .setTitle("选择密钥别名")
+            .setItems(items, (d, idx) -> {
+                customKeyAlias = availableAliases.get(idx);
+                tvKeyAliasBtn.setText("> " + customKeyAlias + " (点击切换)");
+                tvKeyAliasBtn.setTextColor(0xFF2196F3);
+                prefs.edit().putString("custom_key_alias", customKeyAlias).apply();
+                // 重新提取私钥
+                if (customKeyStoreFile != null) tryExtractKey();
+            })
+            .show();
+    }
+
+    /** Step 3: 用别名 + 别名密码提取私钥 */
+    private void tryExtractKey() {
+        if (customKeyStoreFile == null || !customKeyStoreFile.exists() || customKeyAlias.isEmpty()) return;
+        try {
+            String fn = customKeyStoreFile.getName().toLowerCase();
+            String type = (fn.endsWith(".p12") || fn.endsWith(".pkcs12")) ? "PKCS12" : "JKS";
+            KeyStore ks = KeyStore.getInstance(type);
+            FileInputStream fis = new FileInputStream(customKeyStoreFile);
+            ks.load(fis, customKeyPass.toCharArray());
+            fis.close();
+
+            // 别名密码：如果用户填了就用它，否则用密钥库密码
+            char[] keyPass = customKeyAliasPass.isEmpty()
+                ? customKeyPass.toCharArray()
+                : customKeyAliasPass.toCharArray();
+
+            customPrivateKey = (PrivateKey) ks.getKey(customKeyAlias, keyPass);
+            customCert = (X509Certificate) ks.getCertificate(customKeyAlias);
+
+            if (customPrivateKey == null) throw new Exception("无法提取私钥");
+
+            // 保存所有参数
+            prefs.edit()
+                .putString("custom_key_alias", customKeyAlias)
+                .putString("custom_key_alias_pass", customKeyAliasPass)
+                .apply();
+
+            log("✓ 私钥提取成功: " + customKeyAlias);
+            updateKeyStatus();
+        } catch (Exception e) {
+            customPrivateKey = null;
+            customCert = null;
+            log("✗ 私钥提取失败: " + e.getMessage());
+            updateKeyStatus();
         }
     }
 
     private void clearCustomKey() {
-        customKeyStoreFile = null; customKeyPass = ""; customPrivateKey = null; customCert = null;
-        prefs.edit().remove("custom_key_path").remove("custom_key_pass").apply();
+        customKeyStoreFile = null;
+        customKeyPass = "";
+        customKeyAlias = "";
+        customKeyAliasPass = "";
+        customPrivateKey = null;
+        customCert = null;
+        availableAliases.clear();
+        prefs.edit()
+            .remove("custom_key_path")
+            .remove("custom_key_pass")
+            .remove("custom_key_alias")
+            .remove("custom_key_alias_pass")
+            .apply();
         if (etKeyPass != null) etKeyPass.setText("");
+        if (etKeyAliasPass != null) etKeyAliasPass.setText("");
+        if (tvKeyAliasBtn != null) tvKeyAliasBtn.setText("(先输入密钥库密码)");
         log("已重置为内置密钥");
         updateKeyStatus();
     }
@@ -494,13 +641,19 @@ public class MainActivity extends Activity {
     private void updateKeyStatus() {
         if (tvKeyStatus == null) return;
         if (customKeyStoreFile != null && customPrivateKey != null) {
-            tvKeyStatus.setText("✓ 已加载: " + customKeyStoreFile.getName());
+            tvKeyStatus.setText("✓ 已加载: " + customKeyStoreFile.getName() + " / " + customKeyAlias);
             tvKeyStatus.setTextColor(0xFF4CAF50);
+        } else if (customKeyStoreFile != null && !customKeyPass.isEmpty() && customKeyAlias.isEmpty()) {
+            tvKeyStatus.setText("密钥库已解锁，请选择别名并输入别名密码");
+            tvKeyStatus.setTextColor(0xFF2196F3);
+        } else if (customKeyStoreFile != null && !availableAliases.isEmpty()) {
+            tvKeyStatus.setText("密钥库已解锁，请选择别名");
+            tvKeyStatus.setTextColor(0xFF2196F3);
         } else if (customKeyStoreFile != null && customKeyPass.isEmpty()) {
-            tvKeyStatus.setText("密钥文件已选择，请在上方输入密码");
+            tvKeyStatus.setText("密钥文件已选择，请输入密钥库密码");
             tvKeyStatus.setTextColor(0xFF2196F3);
         } else if (customKeyStoreFile != null) {
-            tvKeyStatus.setText("⚠ 密码不正确或密钥库无效，请重试");
+            tvKeyStatus.setText("⚠ 密码错误或别名密码不匹配，请重试");
             tvKeyStatus.setTextColor(0xFFFF9800);
         } else {
             tvKeyStatus.setText("使用内置签名密钥");
