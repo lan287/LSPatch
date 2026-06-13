@@ -58,6 +58,7 @@ public class MainActivity extends Activity {
     private String customKeyPass = "";
     private PrivateKey customPrivateKey;
     private X509Certificate customCert;
+    private EditText etKeyPass;
     private int sigBypassLevel = 0;
     private boolean debuggable = false;
     private boolean overrideVersion = false;
@@ -87,7 +88,10 @@ public class MainActivity extends Activity {
         String savedKeyPath = prefs.getString("custom_key_path", "");
         if (!savedKeyPath.isEmpty()) {
             File f = new File(savedKeyPath);
-            if (f.exists()) { customKeyStoreFile = f; customKeyPass = prefs.getString("custom_key_pass", ""); }
+            if (f.exists()) {
+                customKeyStoreFile = f;
+                customKeyPass = prefs.getString("custom_key_pass", "");
+            }
         }
         sigBypassLevel = prefs.getInt("sig_bypass_level", 0);
     }
@@ -170,6 +174,12 @@ public class MainActivity extends Activity {
         tvLog.setMinHeight(dp(180));
         tvLog.setMovementMethod(new ScrollingMovementMethod());
         root.addView(tvLog, matchW());
+
+        // 尝试恢复已保存的密钥
+        if (customKeyStoreFile != null && !customKeyPass.isEmpty()) {
+            loadCustomKey();
+            updateKeyStatus();
+        }
     }
 
     // ---- 标题 ----
@@ -238,20 +248,30 @@ public class MainActivity extends Activity {
         card.addView(btnClear, matchW());
 
         addSpace(card, dp(6));
-        EditText etPass = new EditText(this);
-        etPass.setHint("密钥库密码");
-        etPass.setTextSize(13);
-        etPass.setPadding(dp(10), dp(8), dp(10), dp(8));
-        etPass.setBackgroundColor(0xFFF0F0F0);
-        etPass.addTextChangedListener(new TextWatcher() {
+        etKeyPass = new EditText(this);
+        etKeyPass.setHint("密钥库密码");
+        etKeyPass.setTextSize(13);
+        etKeyPass.setPadding(dp(10), dp(8), dp(10), dp(8));
+        etKeyPass.setBackgroundColor(0xFFF0F0F0);
+        // 恢复已保存的密码
+        if (customKeyStoreFile != null && !customKeyPass.isEmpty()) {
+            etKeyPass.setText(customKeyPass);
+        }
+        etKeyPass.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
             @Override public void onTextChanged(CharSequence s, int a, int b, int c) {}
             @Override public void afterTextChanged(Editable s) {
                 customKeyPass = s.toString();
-                if (customKeyStoreFile != null) loadCustomKey();
+                if (customKeyStoreFile != null && !customKeyPass.isEmpty()) {
+                    loadCustomKey();
+                    if (customPrivateKey != null) {
+                        // 加载成功，保存密码
+                        prefs.edit().putString("custom_key_pass", customKeyPass).apply();
+                    }
+                }
             }
         });
-        card.addView(etPass, matchW());
+        card.addView(etKeyPass, matchW());
 
         tvKeyStatus = label("使用内置签名密钥", 11, 0xFF888888);
         tvKeyStatus.setPadding(0, dp(6), 0, 0);
@@ -390,8 +410,14 @@ public class MainActivity extends Activity {
                 File saved = saveTemp(data.getData(), "custom.keystore");
                 if (saved == null) { toast("无法读取"); return; }
                 customKeyStoreFile = saved;
-                prefs.edit().putString("custom_key_path", saved.getAbsolutePath()).apply();
-                loadCustomKey();
+                customKeyPass = "";
+                customPrivateKey = null;
+                customCert = null;
+                prefs.edit().putString("custom_key_path", saved.getAbsolutePath()).remove("custom_key_pass").apply();
+                // 清空密码框，提示用户输入密码
+                if (etKeyPass != null) etKeyPass.setText("");
+                log("✓ 密钥文件已选择: " + saved.getName());
+                log("  请在下方输入密码");
                 updateKeyStatus();
                 return;
             }
@@ -460,6 +486,7 @@ public class MainActivity extends Activity {
     private void clearCustomKey() {
         customKeyStoreFile = null; customKeyPass = ""; customPrivateKey = null; customCert = null;
         prefs.edit().remove("custom_key_path").remove("custom_key_pass").apply();
+        if (etKeyPass != null) etKeyPass.setText("");
         log("已重置为内置密钥");
         updateKeyStatus();
     }
@@ -469,8 +496,11 @@ public class MainActivity extends Activity {
         if (customKeyStoreFile != null && customPrivateKey != null) {
             tvKeyStatus.setText("✓ 已加载: " + customKeyStoreFile.getName());
             tvKeyStatus.setTextColor(0xFF4CAF50);
+        } else if (customKeyStoreFile != null && customKeyPass.isEmpty()) {
+            tvKeyStatus.setText("密钥文件已选择，请在上方输入密码");
+            tvKeyStatus.setTextColor(0xFF2196F3);
         } else if (customKeyStoreFile != null) {
-            tvKeyStatus.setText("⚠ 密钥文件已选择但加载失败, 请检查密码");
+            tvKeyStatus.setText("⚠ 密码不正确或密钥库无效，请重试");
             tvKeyStatus.setTextColor(0xFFFF9800);
         } else {
             tvKeyStatus.setText("使用内置签名密钥");
