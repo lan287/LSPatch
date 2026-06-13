@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">LSPatch</string>
+    <string name="welcome_title">LSPatch 2.0</string>
+    <string name="welcome_subtitle">无需 Root 的 Xposed 框架</string>
+    <string name="info_sdk">Android SDK: </string>
+    <string name="info_version">版本: 2.0.0-beta1</string>
+    <string name="info_abi">架构: arm64-v8a</string>
+    <string name="info_status">Hook 引擎状态: 就绪</string>
+    <string name="info_modules">模块加载器: 已初始化</string>
+    <string name="feature_1">集成式 Hook 框架</string>
+    <string name="feature_2">Android 8-15 全兼容</string>
+    <string name="feature_3">Shizuku / 壳注入支持</string>
+    <string name="action_patch">选择 APK 修补</string>
+    <string name="action_modules">管理模块</string>
+</resources>

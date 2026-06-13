@@ -1,0 +1,4 @@
+/workspace/standalone-apk/build/classes/org/lsposed/lspatch/demo/MainActivity.class
+/workspace/standalone-apk/build/classes/org/lsposed/lspatch/demo/R$string.class
+/workspace/standalone-apk/build/classes/org/lsposed/lspatch/demo/R.class
+/workspace/standalone-apk/build/classes/org/lsposed/lspatch/demo/R$mipmap.class
