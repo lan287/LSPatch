@@ -76,8 +76,10 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences("lspatch_prefs", MODE_PRIVATE);
         loadSavedPrefs();
-        requestStoragePermission();
         buildUI();
+        updateAllStatus();
+        log("LSPatch v0.7 就绪");
+        requestStoragePermission();
     }
 
     private void loadSavedPrefs() {
@@ -113,9 +115,6 @@ public class MainActivity extends Activity {
         addSigBypassSection(root);
         addPatchButton(root);
         addLogSection(root);
-
-        updateAllStatus();
-        log("LSPatch v0.7 就绪");
     }
 
     // ---- 头部 ----
@@ -458,8 +457,8 @@ public class MainActivity extends Activity {
         GradientDrawable bg = new GradientDrawable();
         bg.setCornerRadius(dp(10));
         bg.setColor(0xFFFFFFFF);
+        bg.setStroke(dp(1), 0xFFE0E0E0);
         v.setBackground(bg);
-        v.setElevation(dp(2));
     }
 
     private void updateToggleBtn(Button btn, boolean on) {
