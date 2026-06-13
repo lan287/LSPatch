@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <public type="attr" name="name" id="0x01010003" />
+    <public type="attr" name="value" id="0x01010024" />
+    <public type="attr" name="label" id="0x01010001" />
+    <public type="attr" name="versionCode" id="0x0101021b" />
+    <public type="attr" name="versionName" id="0x0101021c" />
+    <public type="attr" name="installLocation" id="0x010102b7" />
+    <public type="attr" name="sharedUserId" id="0x0101000b" />
+    <public type="attr" name="sharedUserLabel" id="0x0101000c" />
+    <public type="attr" name="package" id="0x01010005" />
+    <public type="attr" name="maxSdkVersion" id="0x01010271" />
+    <public type="attr" name="minSdkVersion" id="0x0101020c" />
+    <public type="attr" name="targetSdkVersion" id="0x01010270" />
+    <public type="attr" name="resource" id="0x01010025" />
+    <public type="attr" name="theme" id="0x01010000" />
+    <public type="attr" name="icon" id="0x01010002" />
+    <public type="attr" name="persistent" id="0x01010006" />
+    <public type="attr" name="allowBackup" id="0x01010280" />
+    <public type="attr" name="largeHeap" id="0x0101035a" />
+    <public type="attr" name="debuggable" id="0x0101000f" />
+    <public type="attr" name="hardwareAccelerated" id="0x010102d5" />
+    <public type="attr" name="fullBackupOnly" id="0x01010367" />
+    <public type="attr" name="vmSafeMode" id="0x01010283" />
+    <public type="attr" name="enabled" id="0x0101000e" />
+    <public type="attr" name="description" id="0x01010008" />
+    <public type="attr" name="process" id="0x01010011" />
+    <public type="attr" name="appComponentFactory" id="0x01010417" />
+</resources>

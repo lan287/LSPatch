@@ -1,0 +1,4 @@
+Manifest-Version: 1.0
+Main-Class: org.lsposed.patch.LSPatch
+Build-Version: 0.6
+Build-Time: 2026-06-13T10:55:36Z

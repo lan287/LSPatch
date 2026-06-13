@@ -17,87 +17,85 @@
 package com.android.tools.build.apkzlib.sign;
 
 import com.android.apksig.util.RunnablesExecutor;
-import com.google.auto.value.AutoValue;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import java.security.PrivateKey;
 import java.security.cert.X509Certificate;
-import javax.annotation.Nonnull;
-import javax.annotation.Nullable;
 
-/** A class that contains data to initialize SigningExtension. */
-@AutoValue
-public abstract class SigningOptions {
-
-    /** An implementation of builder pattern to create a {@link SigningOptions} object. */
-    @AutoValue.Builder
-    public abstract static class Builder {
-        public abstract Builder setKey(@Nonnull PrivateKey key);
-        public abstract Builder setCertificates(@Nonnull ImmutableList<X509Certificate> certs);
-        public abstract Builder setCertificates(X509Certificate... certs);
-        public abstract Builder setV1SigningEnabled(boolean enabled);
-        public abstract Builder setV2SigningEnabled(boolean enabled);
-        public abstract Builder setMinSdkVersion(int version);
-        public abstract Builder setValidation(@Nonnull Validation validation);
-        public abstract Builder setExecutor(@Nullable RunnablesExecutor executor);
-        public abstract Builder setSdkDependencyData(@Nullable byte[] sdkDependencyData);
-
-        abstract SigningOptions autoBuild();
-
-        public SigningOptions build() {
-            SigningOptions options = autoBuild();
-            Preconditions.checkArgument(options.getMinSdkVersion() >= 0, "minSdkVersion < 0");
-            Preconditions.checkArgument(
-                    !options.getCertificates().isEmpty(),
-                    "There should be at least one certificate in SigningOptions");
-            return options;
-        }
-    }
+public class SigningOptions {
 
     public static Builder builder() {
-        return new AutoValue_SigningOptions.Builder()
-                .setV1SigningEnabled(false)
-                .setV2SigningEnabled(false)
-                .setValidation(Validation.ALWAYS_VALIDATE);
+        return new Builder()
+            .setV1SigningEnabled(false)
+            .setV2SigningEnabled(false)
+            .setValidation(Validation.ALWAYS_VALIDATE);
     }
 
-    /** {@link PrivateKey} used to sign the archive. */
-    public abstract PrivateKey getKey();
+    private final PrivateKey key;
+    private final ImmutableList<X509Certificate> certificates;
+    private final boolean v1SigningEnabled;
+    private final boolean v2SigningEnabled;
+    private final int minSdkVersion;
+    private final Validation validation;
+    private final RunnablesExecutor executor;
+    private final byte[] sdkDependencyData;
 
-    /**
-     * A list of the {@link X509Certificate}s to embed in the signed APKs. The first
-     * element of the list must be the certificate associated with the private key.
-     */
-    public abstract ImmutableList<X509Certificate> getCertificates();
+    private SigningOptions(PrivateKey key, ImmutableList<X509Certificate> certificates,
+                          boolean v1SigningEnabled, boolean v2SigningEnabled, int minSdkVersion,
+                          Validation validation, RunnablesExecutor executor, byte[] sdkDependencyData) {
+        this.key = key;
+        this.certificates = certificates;
+        this.v1SigningEnabled = v1SigningEnabled;
+        this.v2SigningEnabled = v2SigningEnabled;
+        this.minSdkVersion = minSdkVersion;
+        this.validation = validation;
+        this.executor = executor;
+        this.sdkDependencyData = sdkDependencyData;
+    }
 
-    /** Shows whether signing with JAR Signature Scheme (aka v1 signing) is enabled. */
-    public abstract boolean isV1SigningEnabled();
-
-    /** Shows whether signing with APK Signature Scheme v2 (aka v2 signing) is enabled. */
-    public abstract boolean isV2SigningEnabled();
-
-    /** Minimum SDK version supported. */
-    public abstract int getMinSdkVersion();
-
-    /** Strategy of package signature validation */
-    public abstract Validation getValidation();
-
-    @Nullable
-    public abstract RunnablesExecutor getExecutor();
-
-  /** SDK dependencies of the APK */
-  @SuppressWarnings("mutable")
-  @Nullable
-  public abstract byte[] getSdkDependencyData();
+    public PrivateKey getKey() { return key; }
+    public ImmutableList<X509Certificate> getCertificates() { return certificates; }
+    public boolean isV1SigningEnabled() { return v1SigningEnabled; }
+    public boolean isV2SigningEnabled() { return v2SigningEnabled; }
+    public int getMinSdkVersion() { return minSdkVersion; }
+    public Validation getValidation() { return validation; }
+    public RunnablesExecutor getExecutor() { return executor; }
+    public byte[] getSdkDependencyData() { return sdkDependencyData; }
 
     public enum Validation {
-        /** Always perform signature validation */
         ALWAYS_VALIDATE,
-        /**
-         * Assume the signature is valid without validation i.e. don't resign if no files changed
-         */
         ASSUME_VALID,
-        /** Assume the signature is invalid without validation i.e. unconditionally resign */
         ASSUME_INVALID,
+    }
+
+    public static class Builder {
+        private PrivateKey key;
+        private ImmutableList<X509Certificate> certificates;
+        private boolean v1SigningEnabled;
+        private boolean v2SigningEnabled;
+        private int minSdkVersion;
+        private Validation validation;
+        private RunnablesExecutor executor;
+        private byte[] sdkDependencyData;
+
+        public Builder setKey(PrivateKey key) { this.key = key; return this; }
+        public Builder setCertificates(ImmutableList<X509Certificate> certs) { this.certificates = certs; return this; }
+        public Builder setCertificates(X509Certificate... certs) {
+            this.certificates = ImmutableList.copyOf(certs); return this;
+        }
+        public Builder setV1SigningEnabled(boolean enabled) { this.v1SigningEnabled = enabled; return this; }
+        public Builder setV2SigningEnabled(boolean enabled) { this.v2SigningEnabled = enabled; return this; }
+        public Builder setMinSdkVersion(int version) { this.minSdkVersion = version; return this; }
+        public Builder setValidation(Validation validation) { this.validation = validation; return this; }
+        public Builder setExecutor(RunnablesExecutor executor) { this.executor = executor; return this; }
+        public Builder setSdkDependencyData(byte[] data) { this.sdkDependencyData = data; return this; }
+
+        public SigningOptions build() {
+            Preconditions.checkArgument(minSdkVersion >= 0, "minSdkVersion < 0");
+            Preconditions.checkArgument(certificates != null && !certificates.isEmpty(),
+                    "There should be at least one certificate in SigningOptions");
+            return new SigningOptions(key, certificates, v1SigningEnabled, v2SigningEnabled,
+                    minSdkVersion, validation, executor, sdkDependencyData);
+        }
     }
 }

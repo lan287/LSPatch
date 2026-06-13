@@ -17,112 +17,81 @@
 package com.android.tools.build.apkzlib.zfile;
 
 import com.android.tools.build.apkzlib.sign.SigningOptions;
-import com.google.auto.value.AutoValue;
 import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Predicate;
 import java.io.File;
-import javax.annotation.Nonnull;
-import javax.annotation.Nullable;
 
-/** Factory that creates instances of {@link ApkCreator}. */
 public interface ApkCreatorFactory {
 
-  /**
-   * Creates an {@link ApkCreator} with a given output location, and signing information.
-   *
-   * @param creationData the information to create the APK
-   */
   ApkCreator make(CreationData creationData);
 
-  /**
-   * Data structure with the required information to initiate the creation of an APK. See {@link
-   * ApkCreatorFactory#make(CreationData)}.
-   */
-  @AutoValue
-  abstract class CreationData {
-
-    /** An implementation of builder pattern to create a {@link CreationData} object. */
-    @AutoValue.Builder
-    public abstract static class Builder {
-      public abstract Builder setApkPath(@Nonnull File apkPath);
-
-      public abstract Builder setSigningOptions(@Nonnull SigningOptions signingOptions);
-
-      public abstract Builder setBuiltBy(@Nullable String buildBy);
-
-      public abstract Builder setCreatedBy(@Nullable String createdBy);
-
-      public abstract Builder setNativeLibrariesPackagingMode(
-          NativeLibrariesPackagingMode packagingMode);
-
-      public abstract Builder setNoCompressPredicate(Predicate<String> predicate);
-
-      public abstract Builder setIncremental(boolean incremental);
-
-      abstract CreationData autoBuild();
-
-      public CreationData build() {
-        CreationData data = autoBuild();
-        Preconditions.checkArgument(data.getApkPath() != null, "Output apk path is not set");
-        return data;
-      }
-    }
+  class CreationData {
 
     public static Builder builder() {
-      return new AutoValue_ApkCreatorFactory_CreationData.Builder()
+      return new Builder()
           .setBuiltBy(null)
           .setCreatedBy(null)
           .setNoCompressPredicate(s -> false)
           .setIncremental(false);
     }
 
-    /**
-     * Obtains the path where the APK should be located. If the path already exists, then the APK
-     * may be updated instead of re-created.
-     *
-     * @return the path that may already exist or not
-     */
-    public abstract File getApkPath();
+    private final File apkPath;
+    private final Optional<SigningOptions> signingOptions;
+    private final String builtBy;
+    private final String createdBy;
+    private final NativeLibrariesPackagingMode nativeLibrariesPackagingMode;
+    private final Predicate<String> noCompressPredicate;
+    private final boolean incremental;
 
-    /**
-     * Obtains the data used to sign the APK.
-     *
-     * @return the SigningOptions
-     */
-    @Nonnull
-    public abstract Optional<SigningOptions> getSigningOptions();
+    CreationData(File apkPath, Optional<SigningOptions> signingOptions, String builtBy,
+                String createdBy, NativeLibrariesPackagingMode packagingMode,
+                Predicate<String> noCompressPredicate, boolean incremental) {
+      this.apkPath = apkPath;
+      this.signingOptions = signingOptions;
+      this.builtBy = builtBy;
+      this.createdBy = createdBy;
+      this.nativeLibrariesPackagingMode = packagingMode;
+      this.noCompressPredicate = noCompressPredicate;
+      this.incremental = incremental;
+    }
 
-    /**
-     * Obtains the "built-by" text for the APK.
-     *
-     * @return the text or {@code null} if the default should be used
-     */
-    @Nullable
-    public abstract String getBuiltBy();
+    public File getApkPath() { return apkPath; }
+    public Optional<SigningOptions> getSigningOptions() { return signingOptions; }
+    public String getBuiltBy() { return builtBy; }
+    public String getCreatedBy() { return createdBy; }
+    public NativeLibrariesPackagingMode getNativeLibrariesPackagingMode() { return nativeLibrariesPackagingMode; }
+    public Predicate<String> getNoCompressPredicate() { return noCompressPredicate; }
+    public boolean isIncremental() { return incremental; }
 
-    /**
-     * Obtains the "created-by" text for the APK.
-     *
-     * @return the text or {@code null} if the default should be used
-     */
-    @Nullable
-    public abstract String getCreatedBy();
+    public static class Builder {
+      private File apkPath;
+      private Optional<SigningOptions> signingOptions = Optional.absent();
+      private String builtBy;
+      private String createdBy;
+      private NativeLibrariesPackagingMode nativeLibrariesPackagingMode;
+      private Predicate<String> noCompressPredicate;
+      private boolean incremental;
 
-    /** Returns the packaging policy that the {@link ApkCreator} should use for native libraries. */
-    public abstract NativeLibrariesPackagingMode getNativeLibrariesPackagingMode();
+      public Builder setApkPath(File apkPath) { this.apkPath = apkPath; return this; }
+      public Builder setSigningOptions(SigningOptions signingOptions) {
+        this.signingOptions = Optional.fromNullable(signingOptions); return this;
+      }
+      public Builder setBuiltBy(String builtBy) { this.builtBy = builtBy; return this; }
+      public Builder setCreatedBy(String createdBy) { this.createdBy = createdBy; return this; }
+      public Builder setNativeLibrariesPackagingMode(NativeLibrariesPackagingMode packagingMode) {
+        this.nativeLibrariesPackagingMode = packagingMode; return this;
+      }
+      public Builder setNoCompressPredicate(Predicate<String> predicate) {
+        this.noCompressPredicate = predicate; return this;
+      }
+      public Builder setIncremental(boolean incremental) { this.incremental = incremental; return this; }
 
-    /** Returns the predicate to decide which file paths should be uncompressed. */
-    public abstract Predicate<String> getNoCompressPredicate();
-
-    /**
-     * Returns if this apk build is incremental.
-     *
-     * As mentioned in {@link getApkPath} description, we may already have an existing apk in place.
-     * This is the case when e.g. building APK via build system and this is not the first build.
-     * In that case the build is called incremental and internal APK data might be reused speeding
-     * the build up.
-     */
-    public abstract boolean isIncremental();
+      public CreationData build() {
+        Preconditions.checkArgument(apkPath != null, "Output apk path is not set");
+        return new CreationData(apkPath, signingOptions, builtBy, createdBy,
+            nativeLibrariesPackagingMode, noCompressPredicate, incremental);
+      }
+    }
   }
 }
