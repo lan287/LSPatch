@@ -520,18 +520,38 @@ public class MainActivity extends Activity {
 
     // ==================== 自定义密钥 ====================
 
+    /** 尝试多种密钥库类型加载，返回加载成功的 KeyStore，失败返回 null */
+    private KeyStore loadKeyStoreWithPassword() {
+        if (customKeyStoreFile == null || !customKeyStoreFile.exists()) return null;
+        // 按常见程度依次尝试: PKCS12, BKS, JKS
+        String[] types = {"PKCS12", "BKS", "JKS"};
+        Exception lastErr = null;
+        for (String type : types) {
+            try {
+                KeyStore ks = KeyStore.getInstance(type);
+                FileInputStream fis = new FileInputStream(customKeyStoreFile);
+                ks.load(fis, customKeyPass.toCharArray());
+                fis.close();
+                log("✓ 密钥库类型: " + type);
+                return ks;
+            } catch (Exception e) {
+                lastErr = e;
+            }
+        }
+        log("✗ 密钥库加载失败 (已尝试 PKCS12/BKS/JKS): " + (lastErr != null ? lastErr.getMessage() : "未知错误"));
+        return null;
+    }
+
     /** Step 1: 尝试用密钥库密码加载 keystore，列出所有别名 */
     private void tryLoadKeystore() {
         availableAliases.clear();
-        if (customKeyStoreFile == null || !customKeyStoreFile.exists()) return;
+        KeyStore ks = loadKeyStoreWithPassword();
+        if (ks == null) {
+            tvKeyAliasBtn.setText("(密钥库密码错误或格式不支持)");
+            tvKeyAliasBtn.setTextColor(0xFFFF9800);
+            return;
+        }
         try {
-            String fn = customKeyStoreFile.getName().toLowerCase();
-            String type = (fn.endsWith(".p12") || fn.endsWith(".pkcs12")) ? "PKCS12" : "JKS";
-            KeyStore ks = KeyStore.getInstance(type);
-            FileInputStream fis = new FileInputStream(customKeyStoreFile);
-            ks.load(fis, customKeyPass.toCharArray());
-            fis.close();
-
             java.util.Enumeration<String> aliases = ks.aliases();
             while (aliases.hasMoreElements()) {
                 String a = aliases.nextElement();
@@ -554,8 +574,8 @@ public class MainActivity extends Activity {
             // 尝试提取私钥
             tryExtractKey();
         } catch (Exception e) {
-            log("✗ 密钥库加载失败: " + e.getMessage());
-            tvKeyAliasBtn.setText("(密钥库密码错误?)");
+            log("✗ 列出别名失败: " + e.getMessage());
+            tvKeyAliasBtn.setText("(列出别名失败)");
             tvKeyAliasBtn.setTextColor(0xFFFF9800);
         }
     }
@@ -583,14 +603,15 @@ public class MainActivity extends Activity {
     /** Step 3: 用别名 + 别名密码提取私钥 */
     private void tryExtractKey() {
         if (customKeyStoreFile == null || !customKeyStoreFile.exists() || customKeyAlias.isEmpty()) return;
+        KeyStore ks = loadKeyStoreWithPassword();
+        if (ks == null) {
+            customPrivateKey = null;
+            customCert = null;
+            log("✗ 无法加载密钥库，无法提取私钥");
+            updateKeyStatus();
+            return;
+        }
         try {
-            String fn = customKeyStoreFile.getName().toLowerCase();
-            String type = (fn.endsWith(".p12") || fn.endsWith(".pkcs12")) ? "PKCS12" : "JKS";
-            KeyStore ks = KeyStore.getInstance(type);
-            FileInputStream fis = new FileInputStream(customKeyStoreFile);
-            ks.load(fis, customKeyPass.toCharArray());
-            fis.close();
-
             // 别名密码：如果用户填了就用它，否则用密钥库密码
             char[] keyPass = customKeyAliasPass.isEmpty()
                 ? customKeyPass.toCharArray()
