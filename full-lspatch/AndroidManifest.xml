@@ -22,8 +22,8 @@
 
     <application
         android:label="LSPatch"
-        android:icon="@drawable/ic_launcher"
-        android:roundIcon="@drawable/ic_launcher"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar"
         android:allowBackup="false"
         android:supportsRtl="true"
@@ -41,24 +41,5 @@
             </intent-filter>
         </activity>
 
-        <activity
-            android:name=".ui.PatchActivity"
-            android:exported="true"
-            android:label="修补 APK"/>
-
-        <activity
-            android:name=".ui.ModulePickerActivity"
-            android:exported="true"
-            android:label="选择模块"/>
-
-        <provider
-            android:name="androidx.core.content.FileProvider"
-            android:authorities="org.lsposed.lspatch.provider"
-            android:exported="false"
-            android:grantUriPermissions="true">
-            <meta-data
-                android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/file_paths"/>
-        </provider>
     </application>
 </manifest>
