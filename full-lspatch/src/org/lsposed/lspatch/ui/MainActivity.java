@@ -75,7 +75,7 @@ public class MainActivity extends Activity {
             loadSavedPrefs();
             buildAllUI();
             updateAllStatus();
-            log("LSPatch v0.7.2 就绪");
+            log("LSPatch v0.7.5 就绪");
             requestStoragePermission();
         } catch (Throwable t) {
             // fallback: show error screen
@@ -523,8 +523,8 @@ public class MainActivity extends Activity {
     /** 尝试多种密钥库类型加载，返回加载成功的 KeyStore，失败返回 null */
     private KeyStore loadKeyStoreWithPassword() {
         if (customKeyStoreFile == null || !customKeyStoreFile.exists()) return null;
-        // 按常见程度依次尝试: PKCS12, BKS, JKS
-        String[] types = {"PKCS12", "BKS", "JKS"};
+        // Android 原生 BKS 优先，再尝试 PKCS12 和 JKS
+        String[] types = {"BKS", "PKCS12", "JKS"};
         Exception lastErr = null;
         for (String type : types) {
             try {
@@ -694,7 +694,7 @@ public class MainActivity extends Activity {
         if (targetFile == null) { toast("请先选择目标 APK"); return; }
         new Thread(() -> {
             try {
-                log("--- LSPatch v0.7.2 ---");
+                log("--- LSPatch v0.7.5 ---");
                 log("目标: " + targetFile.getName() + "  模块: " + moduleFiles.size());
                 log("绕过级别: " + sigBypassLevel + "  Debug: " + debuggable + "  降级: " + overrideVersion);
                 log("密钥: " + (customPrivateKey != null ? "自定义" : "内置"));

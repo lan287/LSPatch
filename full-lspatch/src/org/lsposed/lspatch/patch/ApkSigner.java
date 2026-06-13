@@ -162,9 +162,7 @@ public class ApkSigner {
             }
         });
 
-        // 1. 读取 APK，过滤掉旧签名文件
-        byte[] apkBytes = readFile(apk);
-
+        // 1. 读取 APK，过滤掉旧签名文件 (流式处理，不加载全部内容)
         ZipFile zf = new ZipFile(apk);
         final java.util.Map<String, byte[]> files = new java.util.LinkedHashMap<>();
         List<String> names = new ArrayList<>();

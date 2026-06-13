@@ -8,14 +8,11 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.security.KeyStore;
 import java.security.PrivateKey;
 import java.security.cert.X509Certificate;
 import java.util.Enumeration;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.Map;
-import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 import java.util.zip.ZipOutputStream;
@@ -23,7 +20,8 @@ import java.util.zip.ZipOutputStream;
 public class ApkPatchEngine {
 
     private static final String TAG = "LSPatch-Engine";
-    private static final char[] DEFAULT_KEY_PASS = "lspatch2024".toCharArray();
+    private static final String[] KEYSTORE_TYPES = {"BKS", "PKCS12", "JKS"};
+    private static final char[] DEFAULT_KEY_PASS = "lspatch".toCharArray();
     private final Context ctx;
 
     public ApkPatchEngine(Context ctx) { this.ctx = ctx; }
@@ -35,41 +33,72 @@ public class ApkPatchEngine {
         if (cb != null) cb.log("读取: " + target.getName());
         long t0 = System.currentTimeMillis();
 
-        // 1. 解析目标 APK
-        Map<String, byte[]> files = parseApk(target, cb);
-        if (cb != null) cb.log("解析完成: " + files.size() + " 个条目");
-
-        // 2. 注入 LSPatch 资源
-        injectAssets(files, cb);
-
-        // 3. 注入模块 APK
-        int moduleCount = 0;
-        if (modules != null && modules.length > 0) {
-            for (int i = 0; i < modules.length; i++) {
-                File m = modules[i];
-                if (m == null || !m.exists()) continue;
-                files.put("assets/lspatch/modules/module-" + (i + 1) + ".apk", readFileBytes(m));
-                if (cb != null) cb.log("添加模块: " + m.getName());
-                moduleCount++;
-            }
-        }
-
-        // 4. 生成 config.json
-        String config = buildConfig(debuggable, overrideVersion, sigBypassLevel, moduleCount);
-        files.put("assets/lspatch/config.json", config.getBytes("UTF-8"));
-
-        // 5. 检查是否有 appComponentFactory 冲突
-        if (overrideVersion) {
-            // 修改 AndroidManifest 中的 versionCode (设为 1, 以允许降级)
-            if (cb != null) cb.log("已启用降级安装");
-        }
-
-        // 6. 写入未签名 APK
+        // 1. 流式复制目标 APK 到临时文件 (去除旧签名)
         File unsigned = new File(ctx.getExternalFilesDir(null), "unsigned-" + System.currentTimeMillis() + ".apk");
-        writeApk(unsigned, files);
-        if (cb != null) cb.log("未签名: " + formatSize(unsigned.length()));
+        int entryCount = 0;
+        try (ZipFile zf = new ZipFile(target);
+             ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(unsigned))) {
 
-        // 7. 签名
+            zos.setMethod(ZipOutputStream.DEFLATED);
+            Enumeration<? extends ZipEntry> entries = zf.entries();
+            while (entries.hasMoreElements()) {
+                ZipEntry e = entries.nextElement();
+                String name = e.getName();
+                if (e.isDirectory()) continue;
+                // 跳过旧签名文件
+                if (name.startsWith("META-INF/") &&
+                    (name.endsWith(".SF") || name.endsWith(".MF") ||
+                     name.endsWith(".RSA") || name.endsWith(".DSA") || name.endsWith(".EC")))
+                    continue;
+
+                ZipEntry out = new ZipEntry(name);
+                out.setMethod(ZipEntry.DEFLATED);
+                out.setTime(e.getTime());
+                zos.putNextEntry(out);
+                try (InputStream is = zf.getInputStream(e)) {
+                    byte[] buf = new byte[16384];
+                    int n;
+                    while ((n = is.read(buf)) > 0) zos.write(buf, 0, n);
+                }
+                zos.closeEntry();
+                entryCount++;
+            }
+
+            // 2. 注入 LSPatch 资源
+            injectAsset(zos, "assets/lspatch/metaloader.dex", "metaloader.dex");
+            injectAsset(zos, "assets/lspatch/loader.dex", "loader.dex");
+            for (String arch : new String[]{"arm64-v8a", "armeabi-v7a", "x86", "x86_64"}) {
+                try {
+                    byte[] so = readAsset("so/" + arch + "/liblspatch.so");
+                    addBytesToZip(zos, "assets/lspatch/so/" + arch + "/liblspatch.so", so);
+                    if (cb != null) cb.log("  ✓ " + arch + " lib");
+                    // 同时复制到 lib/
+                    addBytesToZip(zos, "lib/" + arch + "/liblspatch.so", so);
+                } catch (Exception ignored) {}
+            }
+
+            // 3. 注入模块 APK
+            int moduleCount = 0;
+            if (modules != null && modules.length > 0) {
+                for (int i = 0; i < modules.length; i++) {
+                    File m = modules[i];
+                    if (m == null || !m.exists()) continue;
+                    addFileToZip(zos, "assets/lspatch/modules/module-" + (i + 1) + ".apk", m);
+                    if (cb != null) cb.log("添加模块: " + m.getName());
+                    moduleCount++;
+                }
+            }
+
+            // 4. 生成 config.json
+            String config = buildConfig(debuggable, overrideVersion, sigBypassLevel, moduleCount);
+            addBytesToZip(zos, "assets/lspatch/config.json", config.getBytes("UTF-8"));
+        }
+
+        if (cb != null) {
+            cb.log("流式处理完成: " + entryCount + " 条目, " + formatSize(unsigned.length()));
+        }
+
+        // 5. 签名
         PrivateKey signKey;
         X509Certificate signCert;
         if (customKey != null && customCert != null) {
@@ -87,7 +116,7 @@ public class ApkPatchEngine {
         File signed = ApkSigner.sign(unsigned, signKey, signCert, cb);
         unsigned.delete();
 
-        // 8. 输出
+        // 6. 输出
         String baseName = target.getName().replaceAll("\\.apk$", "");
         String suffix = "-LSPatched-v0.7";
         if (sigBypassLevel > 0) suffix += "-sigLv" + sigBypassLevel;
@@ -97,49 +126,9 @@ public class ApkPatchEngine {
 
         if (cb != null) {
             long elapsed = System.currentTimeMillis() - t0;
-            cb.log("✅ 修补完成 (" + (elapsed / 1000.0) + "s)");
+            cb.log("✓ 修补完成 (" + (elapsed / 1000.0) + "s)");
         }
         return output;
-    }
-
-    private Map<String, byte[]> parseApk(File target, ApkSigner.LogCallback cb) throws Exception {
-        Map<String, byte[]> files = new LinkedHashMap<>();
-        Set<String> dirs = new LinkedHashSet<>();
-        ZipFile zf = new ZipFile(target);
-        Enumeration<? extends ZipEntry> entries = zf.entries();
-        while (entries.hasMoreElements()) {
-            ZipEntry e = entries.nextElement();
-            String name = e.getName();
-            if (e.isDirectory()) { dirs.add(name); continue; }
-            // 去除旧签名
-            if (name.startsWith("META-INF/") &&
-                (name.endsWith(".SF") || name.endsWith(".MF") ||
-                 name.endsWith(".RSA") || name.endsWith(".DSA") || name.endsWith(".EC")))
-                continue;
-            files.put(name, readZipEntry(zf, e));
-        }
-        zf.close();
-        return files;
-    }
-
-    private void injectAssets(Map<String, byte[]> files, ApkSigner.LogCallback cb) {
-        tryInject(files, "assets/lspatch/metaloader.dex", "metaloader.dex", "metaloader", cb);
-        tryInject(files, "assets/lspatch/loader.dex", "loader.dex", "loader", cb);
-        for (String arch : new String[]{"arm64-v8a", "armeabi-v7a", "x86", "x86_64"}) {
-            if (tryInject(files,
-                    "assets/lspatch/so/" + arch + "/liblspatch.so",
-                    "so/" + arch + "/liblspatch.so",
-                    arch + " native lib", cb) > 0) {
-                if (cb != null) cb.log("  ✓ " + arch);
-            }
-        }
-    }
-
-    private int tryInject(Map<String, byte[]> files, String dest, String srcAsset, String label, ApkSigner.LogCallback cb) {
-        try { byte[] data = readAsset(srcAsset);
-            if (data != null && data.length > 0) { files.put(dest, data); return data.length; }
-        } catch (Throwable ignored) {}
-        return 0;
     }
 
     private String buildConfig(boolean debuggable, boolean override, int sigBypass, int moduleCount) {
@@ -162,44 +151,41 @@ public class ApkPatchEngine {
 
     // ==================== 文件 I/O ====================
 
+    private void injectAsset(ZipOutputStream zos, String destPath, String assetName) {
+        try {
+            byte[] data = readAsset(assetName);
+            if (data != null && data.length > 0) addBytesToZip(zos, destPath, data);
+        } catch (Exception ignored) {}
+    }
+
     private byte[] readAsset(String path) throws Exception {
         try (InputStream is = ctx.getAssets().open(path);
              ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
-            byte[] buf = new byte[8192]; int n;
+            byte[] buf = new byte[16384]; int n;
             while ((n = is.read(buf)) > 0) bos.write(buf, 0, n);
             return bos.toByteArray();
         }
     }
 
-    private byte[] readFileBytes(File f) throws Exception {
-        try (FileInputStream fis = new FileInputStream(f);
-             ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
-            byte[] buf = new byte[8192]; int n;
-            while ((n = fis.read(buf)) > 0) bos.write(buf, 0, n);
-            return bos.toByteArray();
-        }
+    private void addBytesToZip(ZipOutputStream zos, String name, byte[] data) throws Exception {
+        ZipEntry ze = new ZipEntry(name);
+        ze.setMethod(ZipEntry.DEFLATED);
+        ze.setTime(System.currentTimeMillis());
+        zos.putNextEntry(ze);
+        zos.write(data);
+        zos.closeEntry();
     }
 
-    private byte[] readZipEntry(ZipFile zf, ZipEntry e) throws Exception {
-        try (InputStream is = zf.getInputStream(e);
-             ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
-            byte[] buf = new byte[8192]; int n;
-            while ((n = is.read(buf)) > 0) bos.write(buf, 0, n);
-            return bos.toByteArray();
+    private void addFileToZip(ZipOutputStream zos, String name, File f) throws Exception {
+        ZipEntry ze = new ZipEntry(name);
+        ze.setMethod(ZipEntry.DEFLATED);
+        ze.setTime(System.currentTimeMillis());
+        zos.putNextEntry(ze);
+        try (FileInputStream fis = new FileInputStream(f)) {
+            byte[] buf = new byte[16384]; int n;
+            while ((n = fis.read(buf)) > 0) zos.write(buf, 0, n);
         }
-    }
-
-    private void writeApk(File out, Map<String, byte[]> files) throws Exception {
-        try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(out))) {
-            for (Map.Entry<String, byte[]> e : files.entrySet()) {
-                ZipEntry ze = new ZipEntry(e.getKey());
-                ze.setMethod(ZipEntry.DEFLATED);
-                ze.setTime(System.currentTimeMillis());
-                zos.putNextEntry(ze);
-                zos.write(e.getValue());
-                zos.closeEntry();
-            }
-        }
+        zos.closeEntry();
     }
 
     // ==================== 密钥加载 (内置) ====================
@@ -213,15 +199,22 @@ public class ApkPatchEngine {
     }
 
     private Object loadFromKeystore(boolean wantKey) {
-        try (InputStream is = ctx.getAssets().open("release.keystore")) {
-            KeyStore ks = KeyStore.getInstance("JKS");
-            ks.load(is, DEFAULT_KEY_PASS);
-            if (wantKey) return ks.getKey("release", DEFAULT_KEY_PASS);
-            return ks.getCertificate("release");
-        } catch (Exception e) {
-            android.util.Log.e(TAG, "Failed to load built-in key", e);
-            return null;
+        // 尝试多种密钥库类型
+        for (String type : KEYSTORE_TYPES) {
+            try (InputStream is = ctx.getAssets().open("release.keystore")) {
+                KeyStore ks = KeyStore.getInstance(type);
+                ks.load(is, DEFAULT_KEY_PASS);
+                if (wantKey) {
+                    Object key = ks.getKey("lspatch", DEFAULT_KEY_PASS);
+                    if (key != null) return key;
+                } else {
+                    Object cert = ks.getCertificate("lspatch");
+                    if (cert != null) return cert;
+                }
+            } catch (Exception ignored) {}
         }
+        android.util.Log.e(TAG, "Failed to load built-in key with all types");
+        return null;
     }
 
     private String formatSize(long size) {
