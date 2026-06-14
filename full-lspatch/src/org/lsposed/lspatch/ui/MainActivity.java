@@ -6,6 +6,8 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.ShapeDrawable;
+import android.graphics.drawable.shapes.RoundRectShape;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -13,14 +15,11 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
-import android.text.Editable;
-import android.text.TextWatcher;
 import android.text.method.ScrollingMovementMethod;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
-import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
@@ -34,36 +33,40 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
-import java.security.KeyStore;
-import java.security.PrivateKey;
-import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.List;
 
 public class MainActivity extends Activity {
 
+    // ── MD3 色板 ──
+    private static final int C_PRIMARY    = 0xFF6750A4;
+    private static final int C_ON_PRIMARY = 0xFFFFFFFF;
+    private static final int C_SURFACE    = 0xFFFFFBFE;
+    private static final int C_BG         = 0xFFF7F2FA;
+    private static final int C_ON_SURFACE = 0xFF1C1B1F;
+    private static final int C_ON_SURFACE_V = 0xFF49454F;
+    private static final int C_OUTLINE    = 0xFF79747E;
+    private static final int C_ERROR      = 0xFFB3261E;
+    private static final int C_SECONDARY  = 0xFF625B71;
+    private static final int C_SCONTAINER = 0xFFE8DEF8;
+    private static final int C_TERTIARY   = 0xFF7D5260;
+    private static final int C_TCONTAINER = 0xFFFFD8E4;
+    private static final int C_LOG_BG     = 0xFF1C1B1F;
+    private static final int C_LOG_TEXT   = 0xFFC4C7C7;
+    private static final int C_ACCENT_ON  = 0xFF4CAF50;
+    private static final int C_ACCENT_WARN= 0xFFFF9800;
+
     private static final int REQ_TARGET_FILE = 1001;
     private static final int REQ_MODULE_FILE = 1002;
-    private static final int REQ_TARGET_APP = 2001;
-    private static final int REQ_MODULE_APP = 2002;
-    private static final int REQ_KEY_FILE = 3001;
+    private static final int REQ_TARGET_APP  = 2001;
+    private static final int REQ_MODULE_APP  = 2002;
 
     private File targetFile;
     private final List<File> moduleFiles = new ArrayList<>();
-    private TextView tvStatus, tvKeyStatus, tvLog;
+    private TextView tvStatus, tvLog;
     private final StringBuilder logs = new StringBuilder();
     private SharedPreferences prefs;
-
-    private File customKeyStoreFile;
-    private String customKeyPass = "";
-    private String customKeyAlias = "";
-    private String customKeyAliasPass = "";
-    private PrivateKey customPrivateKey;
-    private X509Certificate customCert;
-    private EditText etKeyPass, etKeyAliasPass;
-    private TextView tvKeyAliasBtn;
-    private List<String> availableAliases = new ArrayList<>();
-    private int sigBypassLevel = 0;
+    private int sigBypassLevel = 3; // 默认完整绕过
     private boolean debuggable = false;
     private boolean overrideVersion = false;
 
@@ -72,13 +75,12 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         try {
             prefs = getSharedPreferences("lspatch_prefs", MODE_PRIVATE);
-            loadSavedPrefs();
+            sigBypassLevel = prefs.getInt("sig_bypass_level", 3);
             buildAllUI();
             updateAllStatus();
-            log("LSPatch v0.7.5 就绪");
+            log("LSPatch v0.8 就绪 | 输出未签名 APK，自行签名");
             requestStoragePermission();
         } catch (Throwable t) {
-            // fallback: show error screen
             TextView err = new TextView(this);
             err.setText("LSPatch 启动失败:\n" + t.getClass().getName() + "\n" + t.getMessage());
             err.setTextSize(14);
@@ -88,326 +90,315 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void loadSavedPrefs() {
-        String savedKeyPath = prefs.getString("custom_key_path", "");
-        if (!savedKeyPath.isEmpty()) {
-            File f = new File(savedKeyPath);
-            if (f.exists()) {
-                customKeyStoreFile = f;
-                customKeyPass = prefs.getString("custom_key_pass", "");
-                customKeyAlias = prefs.getString("custom_key_alias", "");
-                customKeyAliasPass = prefs.getString("custom_key_alias_pass", "");
-            }
-        }
-        sigBypassLevel = prefs.getInt("sig_bypass_level", 0);
-    }
-
-    // ==================== UI (极简安全) ====================
+    // ==================== MD3 UI ====================
 
     private void buildAllUI() {
         ScrollView sv = new ScrollView(this);
-        sv.setBackgroundColor(0xFFF5F5F5);
+        sv.setBackgroundColor(C_BG);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(16), dp(20), dp(16), dp(40));
+        root.setPadding(dp(16), dp(24), dp(16), dp(40));
         sv.addView(root);
         setContentView(sv);
 
-        // 标题
-        addTitle(root);
-        addSpace(root, dp(16));
-
-        // 状态
-        tvStatus = label("目标: 未选择  |  模块: 0 个", 13, 0xFF666666);
-        tvStatus.setBackgroundColor(0xFFFFFFFF);
-        tvStatus.setPadding(dp(12), dp(10), dp(12), dp(10));
-        root.addView(tvStatus, matchW());
-
-        addSpace(root, dp(14));
-
-        // 目标 APK
-        root.addView(sectionTitle("目标 APK"));
-        root.addView(hr(root, btn("从文件选择", this::pickTargetFile), btn("从已安装应用", this::pickTargetApp)));
-
-        addSpace(root, dp(14));
-
-        // 模块 APK
-        root.addView(sectionTitle("Xposed 模块 (可选)"));
-        root.addView(hr(root, btn("从文件选择", this::pickModuleFile), btn("从已安装应用", this::pickModuleApp)));
-
-        addSpace(root, dp(14));
-
-        // 自定义密钥
-        root.addView(sectionTitle("签名密钥"));
-        addCustomKeyCard(root);
-
-        addSpace(root, dp(14));
-
-        // 选项
-        root.addView(sectionTitle("选项"));
-        addOptionsCard(root);
-
-        addSpace(root, dp(14));
-
-        // 签名绕过
-        root.addView(sectionTitle("签名校验绕过"));
-        addSigBypassCard(root);
-
+        // ── 标题栏 ──
+        addHeader(root);
         addSpace(root, dp(20));
 
-        // 修补按钮
+        // ── 状态条 ──
+        tvStatus = new TextView(this);
+        tvStatus.setTextSize(13);
+        tvStatus.setTypeface(Typeface.DEFAULT_BOLD);
+        tvStatus.setTextColor(C_ON_SURFACE_V);
+        tvStatus.setText("目标: 未选择  |  模块: 0 个");
+        tvStatus.setPadding(dp(16), dp(12), dp(16), dp(12));
+        tvStatus.setBackground(roundedBg(C_SURFACE, dp(16)));
+        root.addView(tvStatus, matchW());
+
+        addSpace(root, dp(16));
+
+        // ── 目标 APK 卡片 ──
+        root.addView(md3Card(
+            "目标 APK",
+            "选择要修补的安装包",
+            C_PRIMARY,
+            new String[]{"从文件选择", "从已安装应用"},
+            new Runnable[]{this::pickTargetFile, this::pickTargetApp}
+        ));
+
+        addSpace(root, dp(12));
+
+        // ── 模块卡片 ──
+        root.addView(md3Card(
+            "Xposed 模块",
+            "可选，注入 LSPosed 模块",
+            C_SECONDARY,
+            new String[]{"从文件选择", "从已安装应用"},
+            new Runnable[]{this::pickModuleFile, this::pickModuleApp}
+        ));
+
+        addSpace(root, dp(12));
+
+        // ── 签名绕过卡片 ──
+        addSigBypassCard(root);
+
+        addSpace(root, dp(12));
+
+        // ── 选项卡片 ──
+        addOptionsCard(root);
+
+        addSpace(root, dp(24));
+
+        // ── 修补按钮 ──
         Button btnPatch = new Button(this);
-        btnPatch.setText("开始修补并签名");
-        btnPatch.setTextSize(18);
+        btnPatch.setText("开始修补 (未签名输出)");
+        btnPatch.setTextSize(16);
         btnPatch.setTypeface(Typeface.DEFAULT_BOLD);
-        btnPatch.setTextColor(0xFFFFFFFF);
-        btnPatch.setBackgroundColor(0xFF6C2DC7);
+        btnPatch.setTextColor(C_ON_PRIMARY);
+        btnPatch.setBackground(roundedBg(C_PRIMARY, dp(28)));
         btnPatch.setPadding(0, dp(16), 0, dp(16));
+        btnPatch.setAllCaps(false);
         btnPatch.setOnClickListener(v -> doPatch());
         root.addView(btnPatch, matchW());
 
-        addSpace(root, dp(16));
+        addSpace(root, dp(20));
 
-        // 日志
-        root.addView(sectionTitle("日志"));
+        // ── 日志 ──
+        TextView logTitle = new TextView(this);
+        logTitle.setText("日志");
+        logTitle.setTextSize(13);
+        logTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        logTitle.setTextColor(C_ON_SURFACE_V);
+        logTitle.setPadding(0, 0, 0, dp(8));
+        root.addView(logTitle);
+
         tvLog = new TextView(this);
         tvLog.setTextSize(11);
         tvLog.setTypeface(Typeface.MONOSPACE);
-        tvLog.setBackgroundColor(0xFF1E1E2E);
-        tvLog.setTextColor(0xFFCCCCCC);
-        tvLog.setPadding(dp(12), dp(12), dp(12), dp(12));
+        tvLog.setBackground(roundedBg(C_LOG_BG, dp(12)));
+        tvLog.setTextColor(C_LOG_TEXT);
+        tvLog.setPadding(dp(14), dp(14), dp(14), dp(14));
         tvLog.setMinHeight(dp(180));
         tvLog.setMovementMethod(new ScrollingMovementMethod());
+        tvLog.setLineSpacing(dp(2), 1f);
         root.addView(tvLog, matchW());
-
-        // 尝试恢复已保存的密钥 (两步: 解锁 keystore + 提取私钥)
-        if (customKeyStoreFile != null && !customKeyPass.isEmpty()) {
-            tryLoadKeystore();
-            if (!customKeyAlias.isEmpty()) tryExtractKey();
-            updateKeyStatus();
-        }
     }
 
-    // ---- 标题 ----
-    private void addTitle(LinearLayout parent) {
+    // ── 标题栏 ──
+    private void addHeader(LinearLayout parent) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
 
-        // logo 圆
+        // logo
         TextView logo = new TextView(this);
         logo.setText("LS");
-        logo.setTextSize(20);
-        logo.setTextColor(0xFFFFFFFF);
+        logo.setTextSize(22);
+        logo.setTextColor(C_ON_PRIMARY);
         logo.setGravity(Gravity.CENTER);
         logo.setTypeface(Typeface.DEFAULT_BOLD);
-        int s = dp(48);
-        // 使用 PaintDrawable 替代 GradientDrawable (更安全)
-        android.graphics.drawable.shapes.OvalShape shape = new android.graphics.drawable.shapes.OvalShape();
-        android.graphics.drawable.ShapeDrawable sd = new android.graphics.drawable.ShapeDrawable(shape);
-        sd.getPaint().setColor(0xFF6C2DC7);
-        logo.setBackground(sd);
+        int s = dp(52);
+        logo.setBackground(roundedBg(C_PRIMARY, dp(16)));
         row.addView(logo, new LinearLayout.LayoutParams(s, s));
 
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
-        col.setPadding(dp(14), 0, 0, 0);
+        col.setPadding(dp(16), 0, 0, 0);
         row.addView(col, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
 
         TextView t = new TextView(this);
         t.setText("LSPatch");
-        t.setTextSize(22);
+        t.setTextSize(24);
         t.setTypeface(Typeface.DEFAULT_BOLD);
-        t.setTextColor(0xFF1A1A2E);
+        t.setTextColor(C_ON_SURFACE);
         col.addView(t);
 
         TextView v = new TextView(this);
-        v.setText("v0.7.2  |  非 Root Xposed 框架");
-        v.setTextSize(11);
-        v.setTextColor(0xFF999999);
+        v.setText("v0.8  |  非 Root Xposed 框架");
+        v.setTextSize(12);
+        v.setTextColor(C_ON_SURFACE_V);
         col.addView(v);
 
         parent.addView(row, matchW());
     }
 
-    // ---- 自定义密钥卡片 ----
-    private void addCustomKeyCard(LinearLayout parent) {
-        LinearLayout card = cardBg();
+    // ── MD3 卡片 (含两个按钮) ──
+    private LinearLayout md3Card(String title, String subtitle, int accentColor,
+                                  String[] btnLabels, Runnable[] actions) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackground(roundedBg(C_SURFACE, dp(16)));
+        card.setPadding(dp(16), dp(16), dp(16), dp(16));
 
-        // 1. 导入按钮
-        Button btnImport = new Button(this);
-        btnImport.setText("导入密钥库 (.jks/.p12)");
-        btnImport.setTextSize(13);
-        btnImport.setTextColor(0xFFFFFFFF);
-        btnImport.setBackgroundColor(0xFF5C6BC0);
-        btnImport.setPadding(dp(12), dp(10), dp(12), dp(10));
-        btnImport.setOnClickListener(v -> pickKeyFile());
-        card.addView(btnImport, matchW());
+        // 标题
+        TextView tv = new TextView(this);
+        tv.setText(title);
+        tv.setTextSize(14);
+        tv.setTypeface(Typeface.DEFAULT_BOLD);
+        tv.setTextColor(C_ON_SURFACE);
+        card.addView(tv);
 
-        addSpace(card, dp(6));
-        Button btnClear = new Button(this);
-        btnClear.setText("重置为内置密钥");
-        btnClear.setTextSize(12);
-        btnClear.setTextColor(0xFF888888);
-        btnClear.setBackgroundColor(0xFFEEEEEE);
-        btnClear.setPadding(dp(12), dp(8), dp(12), dp(8));
-        btnClear.setOnClickListener(v -> clearCustomKey());
-        card.addView(btnClear, matchW());
+        // 副标题
+        TextView st = new TextView(this);
+        st.setText(subtitle);
+        st.setTextSize(11);
+        st.setTextColor(C_ON_SURFACE_V);
+        st.setPadding(0, dp(2), 0, dp(12));
+        card.addView(st);
 
-        // 2. 密钥库密码
-        addSpace(card, dp(8));
-        TextView lbl1 = label("密钥库密码:", 12, 0xFF666666);
-        lbl1.setPadding(0, 0, 0, dp(4));
-        card.addView(lbl1);
-
-        etKeyPass = new EditText(this);
-        etKeyPass.setHint("输入密钥库 (.jks/.p12) 的密码");
-        etKeyPass.setTextSize(13);
-        etKeyPass.setPadding(dp(10), dp(8), dp(10), dp(8));
-        etKeyPass.setBackgroundColor(0xFFF0F0F0);
-        if (customKeyStoreFile != null && !customKeyPass.isEmpty()) {
-            etKeyPass.setText(customKeyPass);
+        // 按钮行
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        for (int i = 0; i < btnLabels.length; i++) {
+            Button b = new Button(this);
+            b.setText(btnLabels[i]);
+            b.setTextSize(13);
+            b.setAllCaps(false);
+            b.setTextColor(accentColor);
+            b.setBackground(roundedBg(accentColor & 0x00FFFFFF | 0x14000000, dp(20)));
+            b.setPadding(dp(16), dp(10), dp(16), dp(10));
+            final int idx = i;
+            b.setOnClickListener(v -> actions[idx].run());
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+            if (i == 0) lp.rightMargin = dp(8);
+            row.addView(b, lp);
         }
-        etKeyPass.addTextChangedListener(new TextWatcher() {
-            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
-            @Override public void onTextChanged(CharSequence s, int a, int b, int c) {}
-            @Override public void afterTextChanged(Editable s) {
-                customKeyPass = s.toString();
-                if (customKeyStoreFile != null && !customKeyPass.isEmpty()) {
-                    tryLoadKeystore(); // 只加载 keystore，列出别名，不提取私钥
-                }
-            }
-        });
-        card.addView(etKeyPass, matchW());
+        card.addView(row, matchW());
 
-        // 3. 别名选择
-        addSpace(card, dp(8));
-        TextView lbl2 = label("密钥别名:", 12, 0xFF666666);
-        lbl2.setPadding(0, 0, 0, dp(4));
-        card.addView(lbl2);
-
-        tvKeyAliasBtn = new TextView(this);
-        tvKeyAliasBtn.setTextSize(13);
-        tvKeyAliasBtn.setTextColor(0xFF2196F3);
-        tvKeyAliasBtn.setBackgroundColor(0xFFF0F0F0);
-        tvKeyAliasBtn.setPadding(dp(12), dp(10), dp(12), dp(10));
-        tvKeyAliasBtn.setGravity(Gravity.CENTER_VERTICAL);
-        tvKeyAliasBtn.setText("(先输入密钥库密码)");
-        tvKeyAliasBtn.setOnClickListener(v -> showAliasPicker());
-        card.addView(tvKeyAliasBtn, matchW());
-
-        // 4. 别名密码 (key password)
-        addSpace(card, dp(8));
-        TextView lbl3 = label("别名密码 (留空则使用密钥库密码):", 12, 0xFF666666);
-        lbl3.setPadding(0, 0, 0, dp(4));
-        card.addView(lbl3);
-
-        etKeyAliasPass = new EditText(this);
-        etKeyAliasPass.setHint("别名/密钥条目的单独密码");
-        etKeyAliasPass.setTextSize(13);
-        etKeyAliasPass.setPadding(dp(10), dp(8), dp(10), dp(8));
-        etKeyAliasPass.setBackgroundColor(0xFFF0F0F0);
-        if (customKeyStoreFile != null && !customKeyAliasPass.isEmpty()) {
-            etKeyAliasPass.setText(customKeyAliasPass);
-        }
-        etKeyAliasPass.addTextChangedListener(new TextWatcher() {
-            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
-            @Override public void onTextChanged(CharSequence s, int a, int b, int c) {}
-            @Override public void afterTextChanged(Editable s) {
-                customKeyAliasPass = s.toString();
-                if (customKeyStoreFile != null && !customKeyAlias.isEmpty()) {
-                    tryExtractKey(); // 提取私钥
-                }
-            }
-        });
-        card.addView(etKeyAliasPass, matchW());
-
-        // 5. 状态
-        addSpace(card, dp(6));
-        tvKeyStatus = label("使用内置签名密钥", 11, 0xFF888888);
-        tvKeyStatus.setPadding(0, dp(4), 0, 0);
-        card.addView(tvKeyStatus);
-
-        updateKeyStatus();
-        parent.addView(card, matchW());
+        return card;
     }
 
-    // ---- 选项卡片 ----
-    private void addOptionsCard(LinearLayout parent) {
-        LinearLayout card = cardBg();
-        card.addView(toggleRow("Debuggable", b -> { debuggable = b; }), matchW());
-        card.addView(divider());
-        card.addView(toggleRow("允许降级安装", b -> { overrideVersion = b; }), matchW());
-        parent.addView(card, matchW());
-    }
-
-    // ---- 签名绕过卡片 ----
+    // ── 签名绕过卡片 ──
     private void addSigBypassCard(LinearLayout parent) {
-        LinearLayout card = cardBg();
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackground(roundedBg(C_SURFACE, dp(16)));
+        card.setPadding(dp(16), dp(16), dp(16), dp(16));
+
+        TextView tv = new TextView(this);
+        tv.setText("签名校验绕过");
+        tv.setTextSize(14);
+        tv.setTypeface(Typeface.DEFAULT_BOLD);
+        tv.setTextColor(C_ON_SURFACE);
+        card.addView(tv);
+
+        TextView st = new TextView(this);
+        st.setText("绕过应用签名校验，推荐使用级别 3");
+        st.setTextSize(11);
+        st.setTextColor(C_ON_SURFACE_V);
+        st.setPadding(0, dp(2), 0, dp(12));
+        card.addView(st);
+
+        String[] opts = {
+            "级别 0  ·  禁用 — 不绕过任何校验",
+            "级别 1  ·  基础 — Hook PackageManager 签名检查",
+            "级别 2  ·  增强 — PM + 文件 I/O 层双重绕过",
+            "级别 3  ·  完整 — 全层级绕过 (推荐)",
+        };
+        String[] descs = {
+            "适用于已正确签名的 APK",
+            "拦截 PackageManager.getPackageInfo 等 API",
+            "额外拦截 APK 文件读取时的签名验证",
+            "PM + IO + Native 层全覆盖，兼容性最强",
+        };
 
         RadioGroup rg = new RadioGroup(this);
         rg.setOrientation(LinearLayout.VERTICAL);
 
-        String[] opts = {
-            "级别 0 - 禁用 (安全模式)",
-            "级别 1 - PackageManager 绕过",
-            "级别 2 - PM + I/O 层绕过",
-            "级别 3 - 完整绕过 (最强)",
-        };
         for (int i = 0; i < opts.length; i++) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.VERTICAL);
+            row.setPadding(dp(4), dp(6), 0, dp(6));
+
             RadioButton rb = new RadioButton(this);
             rb.setId(i);
             rb.setText(opts[i]);
             rb.setTextSize(13);
-            rb.setTextColor(0xFF444444);
-            rb.setPadding(0, dp(4), 0, dp(4));
+            rb.setTextColor(C_ON_SURFACE);
             if (i == sigBypassLevel) rb.setChecked(true);
-            rg.addView(rb);
+
+            TextView desc = new TextView(this);
+            desc.setText(descs[i]);
+            desc.setTextSize(10);
+            desc.setTextColor(C_ON_SURFACE_V);
+            desc.setPadding(dp(32), dp(2), 0, 0);
+
+            row.addView(rb);
+            row.addView(desc);
+            rg.addView(row);
         }
+
         rg.setOnCheckedChangeListener((group, id) -> {
             sigBypassLevel = id;
             prefs.edit().putInt("sig_bypass_level", sigBypassLevel).apply();
         });
         card.addView(rg);
 
-        addSpace(card, dp(4));
-        TextView hint = label("级别越高兼容性越好，但请从低级别开始尝试", 10, 0xFFFF9800);
+        addSpace(card, dp(8));
+        TextView hint = new TextView(this);
+        hint.setText("⚠ 注入原签名副本到 config，确保绕过生效");
+        hint.setTextSize(10);
+        hint.setTextColor(C_ACCENT_WARN);
         card.addView(hint);
 
         parent.addView(card, matchW());
     }
 
-    // ---- 开关行 ----
-    private LinearLayout toggleRow(String name, java.util.function.Consumer<Boolean> onChange) {
+    // ── 选项卡片 ──
+    private void addOptionsCard(LinearLayout parent) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackground(roundedBg(C_SURFACE, dp(16)));
+        card.setPadding(0, dp(4), 0, dp(4));
+
+        card.addView(toggleRow("Debuggable 模式", "允许调试修补后的应用", b -> debuggable = b));
+        card.addView(md3Divider());
+        card.addView(toggleRow("允许降级安装", "覆盖安装更低版本号", b -> overrideVersion = b));
+
+        parent.addView(card, matchW());
+    }
+
+    private LinearLayout toggleRow(String name, String desc, java.util.function.Consumer<Boolean> onChange) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(12), dp(10), dp(12), dp(10));
+        row.setPadding(dp(16), dp(12), dp(16), dp(12));
+
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        row.addView(col, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
 
         TextView tv = new TextView(this);
         tv.setText(name);
         tv.setTextSize(14);
-        tv.setTextColor(0xFF333333);
-        row.addView(tv, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        tv.setTextColor(C_ON_SURFACE);
+        col.addView(tv);
+
+        TextView dv = new TextView(this);
+        dv.setText(desc);
+        dv.setTextSize(10);
+        dv.setTextColor(C_ON_SURFACE_V);
+        col.addView(dv);
 
         final boolean[] state = {false};
         Button sw = new Button(this);
         sw.setText("关");
         sw.setTextSize(12);
-        sw.setTextColor(0xFF888888);
-        sw.setBackgroundColor(0xFFE0E0E0);
-        sw.setPadding(dp(20), dp(6), dp(20), dp(6));
+        sw.setAllCaps(false);
+        sw.setTextColor(C_ON_SURFACE_V);
+        sw.setBackground(roundedBg(C_BG, dp(20)));
+        sw.setPadding(dp(20), dp(8), dp(20), dp(8));
         sw.setOnClickListener(v -> {
             state[0] = !state[0];
             if (state[0]) {
                 sw.setText("开");
-                sw.setTextColor(0xFFFFFFFF);
-                sw.setBackgroundColor(0xFF6C2DC7);
+                sw.setTextColor(C_ON_PRIMARY);
+                sw.setBackground(roundedBg(C_PRIMARY, dp(20)));
             } else {
                 sw.setText("关");
-                sw.setTextColor(0xFF888888);
-                sw.setBackgroundColor(0xFFE0E0E0);
+                sw.setTextColor(C_ON_SURFACE_V);
+                sw.setBackground(roundedBg(C_BG, dp(20)));
             }
             onChange.accept(state[0]);
         });
@@ -429,17 +420,10 @@ public class MainActivity extends Activity {
         startActivityForResult(Intent.createChooser(i, "选择 APK"), req);
     }
 
-    private void pickKeyFile() {
-        Intent i = new Intent(Intent.ACTION_GET_CONTENT);
-        i.setType("*/*");
-        startActivityForResult(Intent.createChooser(i, "选择密钥库"), REQ_KEY_FILE);
-    }
-
     @Override
     protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
         if (res != RESULT_OK) return;
-
         try {
             if (req == REQ_TARGET_APP || req == REQ_MODULE_APP) {
                 String path = data != null ? data.getStringExtra("apk_path") : null;
@@ -456,31 +440,6 @@ public class MainActivity extends Activity {
                 updateAllStatus();
                 return;
             }
-
-            if (req == REQ_KEY_FILE) {
-                if (data == null || data.getData() == null) return;
-                File saved = saveTemp(data.getData(), "custom.keystore");
-                if (saved == null) { toast("无法读取"); return; }
-                customKeyStoreFile = saved;
-                customKeyPass = "";
-                customKeyAlias = "";
-                customKeyAliasPass = "";
-                customPrivateKey = null;
-                customCert = null;
-                availableAliases.clear();
-                prefs.edit().putString("custom_key_path", saved.getAbsolutePath())
-                    .remove("custom_key_pass").remove("custom_key_alias").remove("custom_key_alias_pass").apply();
-                if (etKeyPass != null) etKeyPass.setText("");
-                if (etKeyAliasPass != null) etKeyAliasPass.setText("");
-                if (tvKeyAliasBtn != null) { tvKeyAliasBtn.setText("(先输入密钥库密码)"); tvKeyAliasBtn.setTextColor(0xFF2196F3); }
-                log("✓ 密钥文件已选择: " + saved.getName());
-                log("  1. 输入密钥库密码");
-                log("  2. 选择别名");
-                log("  3. 输入别名密码 (如需要)");
-                updateKeyStatus();
-                return;
-            }
-
             // 文件选择
             if (data == null || data.getData() == null) return;
             String name = (req == REQ_TARGET_FILE) ? "target.apk" : "module-" + (moduleFiles.size() + 1) + ".apk";
@@ -518,170 +477,6 @@ public class MainActivity extends Activity {
         } catch (Exception e) { return null; }
     }
 
-    // ==================== 自定义密钥 ====================
-
-    /** 尝试多种密钥库类型加载，返回加载成功的 KeyStore，失败返回 null */
-    private KeyStore loadKeyStoreWithPassword() {
-        if (customKeyStoreFile == null || !customKeyStoreFile.exists()) return null;
-        // Android 原生 BKS 优先，再尝试 PKCS12 和 JKS
-        String[] types = {"BKS", "PKCS12", "JKS"};
-        Exception lastErr = null;
-        for (String type : types) {
-            try {
-                KeyStore ks = KeyStore.getInstance(type);
-                FileInputStream fis = new FileInputStream(customKeyStoreFile);
-                ks.load(fis, customKeyPass.toCharArray());
-                fis.close();
-                log("✓ 密钥库类型: " + type);
-                return ks;
-            } catch (Exception e) {
-                lastErr = e;
-            }
-        }
-        log("✗ 密钥库加载失败 (已尝试 PKCS12/BKS/JKS): " + (lastErr != null ? lastErr.getMessage() : "未知错误"));
-        return null;
-    }
-
-    /** Step 1: 尝试用密钥库密码加载 keystore，列出所有别名 */
-    private void tryLoadKeystore() {
-        availableAliases.clear();
-        KeyStore ks = loadKeyStoreWithPassword();
-        if (ks == null) {
-            tvKeyAliasBtn.setText("(密钥库密码错误或格式不支持)");
-            tvKeyAliasBtn.setTextColor(0xFFFF9800);
-            return;
-        }
-        try {
-            java.util.Enumeration<String> aliases = ks.aliases();
-            while (aliases.hasMoreElements()) {
-                String a = aliases.nextElement();
-                if (ks.isKeyEntry(a)) availableAliases.add(a);
-            }
-            if (availableAliases.isEmpty()) {
-                log("✗ 密钥库中没有私钥条目");
-                tvKeyAliasBtn.setText("(无可用别名)");
-                return;
-            }
-            // 自动选择第一个别名（如果还没选或已选的不存在）
-            if (customKeyAlias.isEmpty() || !availableAliases.contains(customKeyAlias)) {
-                customKeyAlias = availableAliases.get(0);
-            }
-            tvKeyAliasBtn.setText("> " + customKeyAlias + " (点击切换)");
-            tvKeyAliasBtn.setTextColor(0xFF2196F3);
-            log("✓ 密钥库已解锁，别名: " + customKeyAlias + " (共" + availableAliases.size() + "个)");
-            prefs.edit().putString("custom_key_pass", customKeyPass).apply();
-
-            // 尝试提取私钥
-            tryExtractKey();
-        } catch (Exception e) {
-            log("✗ 列出别名失败: " + e.getMessage());
-            tvKeyAliasBtn.setText("(列出别名失败)");
-            tvKeyAliasBtn.setTextColor(0xFFFF9800);
-        }
-    }
-
-    /** Step 2: 显示别名选择对话框 */
-    private void showAliasPicker() {
-        if (availableAliases.isEmpty()) {
-            toast("请先输入正确的密钥库密码");
-            return;
-        }
-        String[] items = availableAliases.toArray(new String[0]);
-        new AlertDialog.Builder(this)
-            .setTitle("选择密钥别名")
-            .setItems(items, (d, idx) -> {
-                customKeyAlias = availableAliases.get(idx);
-                tvKeyAliasBtn.setText("> " + customKeyAlias + " (点击切换)");
-                tvKeyAliasBtn.setTextColor(0xFF2196F3);
-                prefs.edit().putString("custom_key_alias", customKeyAlias).apply();
-                // 重新提取私钥
-                if (customKeyStoreFile != null) tryExtractKey();
-            })
-            .show();
-    }
-
-    /** Step 3: 用别名 + 别名密码提取私钥 */
-    private void tryExtractKey() {
-        if (customKeyStoreFile == null || !customKeyStoreFile.exists() || customKeyAlias.isEmpty()) return;
-        KeyStore ks = loadKeyStoreWithPassword();
-        if (ks == null) {
-            customPrivateKey = null;
-            customCert = null;
-            log("✗ 无法加载密钥库，无法提取私钥");
-            updateKeyStatus();
-            return;
-        }
-        try {
-            // 别名密码：如果用户填了就用它，否则用密钥库密码
-            char[] keyPass = customKeyAliasPass.isEmpty()
-                ? customKeyPass.toCharArray()
-                : customKeyAliasPass.toCharArray();
-
-            customPrivateKey = (PrivateKey) ks.getKey(customKeyAlias, keyPass);
-            customCert = (X509Certificate) ks.getCertificate(customKeyAlias);
-
-            if (customPrivateKey == null) throw new Exception("无法提取私钥");
-
-            // 保存所有参数
-            prefs.edit()
-                .putString("custom_key_alias", customKeyAlias)
-                .putString("custom_key_alias_pass", customKeyAliasPass)
-                .apply();
-
-            log("✓ 私钥提取成功: " + customKeyAlias);
-            updateKeyStatus();
-        } catch (Exception e) {
-            customPrivateKey = null;
-            customCert = null;
-            log("✗ 私钥提取失败: " + e.getMessage());
-            updateKeyStatus();
-        }
-    }
-
-    private void clearCustomKey() {
-        customKeyStoreFile = null;
-        customKeyPass = "";
-        customKeyAlias = "";
-        customKeyAliasPass = "";
-        customPrivateKey = null;
-        customCert = null;
-        availableAliases.clear();
-        prefs.edit()
-            .remove("custom_key_path")
-            .remove("custom_key_pass")
-            .remove("custom_key_alias")
-            .remove("custom_key_alias_pass")
-            .apply();
-        if (etKeyPass != null) etKeyPass.setText("");
-        if (etKeyAliasPass != null) etKeyAliasPass.setText("");
-        if (tvKeyAliasBtn != null) tvKeyAliasBtn.setText("(先输入密钥库密码)");
-        log("已重置为内置密钥");
-        updateKeyStatus();
-    }
-
-    private void updateKeyStatus() {
-        if (tvKeyStatus == null) return;
-        if (customKeyStoreFile != null && customPrivateKey != null) {
-            tvKeyStatus.setText("✓ 已加载: " + customKeyStoreFile.getName() + " / " + customKeyAlias);
-            tvKeyStatus.setTextColor(0xFF4CAF50);
-        } else if (customKeyStoreFile != null && !customKeyPass.isEmpty() && customKeyAlias.isEmpty()) {
-            tvKeyStatus.setText("密钥库已解锁，请选择别名并输入别名密码");
-            tvKeyStatus.setTextColor(0xFF2196F3);
-        } else if (customKeyStoreFile != null && !availableAliases.isEmpty()) {
-            tvKeyStatus.setText("密钥库已解锁，请选择别名");
-            tvKeyStatus.setTextColor(0xFF2196F3);
-        } else if (customKeyStoreFile != null && customKeyPass.isEmpty()) {
-            tvKeyStatus.setText("密钥文件已选择，请输入密钥库密码");
-            tvKeyStatus.setTextColor(0xFF2196F3);
-        } else if (customKeyStoreFile != null) {
-            tvKeyStatus.setText("⚠ 密码错误或别名密码不匹配，请重试");
-            tvKeyStatus.setTextColor(0xFFFF9800);
-        } else {
-            tvKeyStatus.setText("使用内置签名密钥");
-            tvKeyStatus.setTextColor(0xFF888888);
-        }
-    }
-
     private void updateAllStatus() {
         if (tvStatus != null) {
             tvStatus.setText("目标: " + (targetFile == null ? "(未选择)" : targetFile.getName()) + "  |  模块: " + moduleFiles.size() + " 个");
@@ -694,23 +489,24 @@ public class MainActivity extends Activity {
         if (targetFile == null) { toast("请先选择目标 APK"); return; }
         new Thread(() -> {
             try {
-                log("--- LSPatch v0.7.5 ---");
-                log("目标: " + targetFile.getName() + "  模块: " + moduleFiles.size());
+                log("── LSPatch v0.8 ──");
+                log("目标: " + targetFile.getName());
+                log("模块: " + moduleFiles.size() + " 个");
                 log("绕过级别: " + sigBypassLevel + "  Debug: " + debuggable + "  降级: " + overrideVersion);
-                log("密钥: " + (customPrivateKey != null ? "自定义" : "内置"));
+                log("签名: 跳过 (输出未签名 APK)");
 
                 ApkPatchEngine engine = new ApkPatchEngine(MainActivity.this);
                 File[] mods = moduleFiles.toArray(new File[0]);
                 final File output = engine.patch(targetFile, mods, debuggable, overrideVersion,
-                    sigBypassLevel, customPrivateKey, customCert, MainActivity.this::log);
+                    sigBypassLevel, MainActivity.this::log);
 
-                log("✅ 完成: " + output.getName());
+                log("文件: " + output.getAbsolutePath());
 
                 new Handler(Looper.getMainLooper()).post(() ->
                     new AlertDialog.Builder(MainActivity.this)
                         .setTitle("修补完成")
-                        .setMessage("文件:\n" + output.getAbsolutePath())
-                        .setPositiveButton("安装", (d, w) -> installApk(output))
+                        .setMessage("输出未签名 APK:\n" + output.getAbsolutePath() + "\n\n请用 apksigner / MT 管理器签名后安装")
+                        .setPositiveButton("分享", (d, w) -> shareApk(output))
                         .setNegativeButton("关闭", null)
                         .show()
                 );
@@ -725,13 +521,14 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    private void installApk(File apk) {
+    private void shareApk(File apk) {
         try {
-            Intent i = new Intent(Intent.ACTION_VIEW);
-            i.setDataAndType(Uri.fromFile(apk), "application/vnd.android.package-archive");
-            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            startActivity(i);
-        } catch (Exception e) { toast("安装失败: " + e.getMessage()); }
+            Intent i = new Intent(Intent.ACTION_SEND);
+            i.setType("application/vnd.android.package-archive");
+            i.putExtra(Intent.EXTRA_STREAM, Uri.fromFile(apk));
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(Intent.createChooser(i, "分享 APK"));
+        } catch (Exception e) { toast("分享失败: " + e.getMessage()); }
     }
 
     private void log(final String msg) {
@@ -750,61 +547,23 @@ public class MainActivity extends Activity {
         }
     }
 
-    // ==================== UI 工具 ====================
+    // ==================== MD3 工具方法 ====================
 
-    private TextView sectionTitle(String text) {
-        TextView tv = new TextView(this);
-        tv.setText(text);
-        tv.setTextSize(13);
-        tv.setTypeface(Typeface.DEFAULT_BOLD);
-        tv.setTextColor(0xFF6C2DC7);
-        tv.setPadding(0, 0, 0, dp(8));
-        return tv;
+    /** 安全的圆角背景 (ShapeDrawable，避免 GradientDrawable 崩溃) */
+    private ShapeDrawable roundedBg(int color, float radiusDp) {
+        float r = dp(radiusDp);
+        float[] radii = {r, r, r, r, r, r, r, r};
+        ShapeDrawable sd = new ShapeDrawable(new RoundRectShape(radii, null, null));
+        sd.getPaint().setColor(color);
+        return sd;
     }
 
-    private TextView label(String text, int size, int color) {
-        TextView tv = new TextView(this);
-        tv.setText(text);
-        tv.setTextSize(size);
-        tv.setTextColor(color);
-        return tv;
-    }
-
-    private Button btn(String text, Runnable onClick) {
-        Button b = new Button(this);
-        b.setText(text);
-        b.setTextSize(13);
-        b.setTextColor(0xFF444444);
-        b.setBackgroundColor(0xFFEEEEEE);
-        b.setPadding(dp(10), dp(10), dp(10), dp(10));
-        b.setOnClickListener(v -> onClick.run());
-        return b;
-    }
-
-    private LinearLayout hr(LinearLayout parent, Button b1, Button b2) {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
-        p.rightMargin = dp(6);
-        row.addView(b1, p);
-        row.addView(b2, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-        return row;
-    }
-
-    private LinearLayout cardBg() {
-        LinearLayout c = new LinearLayout(this);
-        c.setOrientation(LinearLayout.VERTICAL);
-        c.setBackgroundColor(0xFFFFFFFF);
-        c.setPadding(dp(14), dp(14), dp(14), dp(14));
-        return c;
-    }
-
-    private View divider() {
+    private View md3Divider() {
         View v = new View(this);
-        v.setBackgroundColor(0xFFEEEEEE);
+        v.setBackgroundColor(C_OUTLINE);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1));
-        lp.topMargin = dp(6);
-        lp.bottomMargin = dp(6);
+        lp.leftMargin = dp(16);
+        lp.rightMargin = dp(16);
         v.setLayoutParams(lp);
         return v;
     }
