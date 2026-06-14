@@ -4,7 +4,6 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.ShapeDrawable;
 import android.graphics.drawable.shapes.RoundRectShape;
@@ -21,8 +20,6 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.LinearLayout;
-import android.widget.RadioButton;
-import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -39,36 +36,44 @@ import java.util.List;
 public class MainActivity extends Activity {
 
     // ── MD3 色板 ──
-    private static final int C_PRIMARY    = 0xFF6750A4;
-    private static final int C_ON_PRIMARY = 0xFFFFFFFF;
-    private static final int C_SURFACE    = 0xFFFFFBFE;
-    private static final int C_BG         = 0xFFF7F2FA;
-    private static final int C_ON_SURFACE = 0xFF1C1B1F;
+    private static final int C_PRIMARY     = 0xFF6750A4;
+    private static final int C_ON_PRIMARY  = 0xFFFFFFFF;
+    private static final int C_SURFACE     = 0xFFFFFBFE;
+    private static final int C_BG          = 0xFFF7F2FA;
+    private static final int C_ON_SURFACE  = 0xFF1C1B1F;
     private static final int C_ON_SURFACE_V = 0xFF49454F;
-    private static final int C_OUTLINE    = 0xFF79747E;
-    private static final int C_ERROR      = 0xFFB3261E;
-    private static final int C_SECONDARY  = 0xFF625B71;
-    private static final int C_SCONTAINER = 0xFFE8DEF8;
-    private static final int C_TERTIARY   = 0xFF7D5260;
-    private static final int C_TCONTAINER = 0xFFFFD8E4;
-    private static final int C_LOG_BG     = 0xFF1C1B1F;
-    private static final int C_LOG_TEXT   = 0xFFC4C7C7;
-    private static final int C_ACCENT_ON  = 0xFF4CAF50;
-    private static final int C_ACCENT_WARN= 0xFFFF9800;
+    private static final int C_OUTLINE     = 0xFF79747E;
+    private static final int C_LOG_BG      = 0xFF1C1B1F;
+    private static final int C_LOG_TEXT    = 0xFFC4C7C7;
+    private static final int C_ACCENT_ON   = 0xFF4CAF50;
+    private static final int C_ACCENT_WARN = 0xFFFF9800;
+    private static final int C_ERROR        = 0xFFB3261E;
+    private static final int C_SCONTAINER  = 0xFFE8DEF8;
 
     private static final int REQ_TARGET_FILE = 1001;
     private static final int REQ_MODULE_FILE = 1002;
     private static final int REQ_TARGET_APP  = 2001;
     private static final int REQ_MODULE_APP  = 2002;
 
+    // 绕过级别定义: {level, title, description, unused}
+    private static final Object[][] SIG_LEVELS = {
+        {0,  "禁用",           "不绕过任何签名校验\n适用于已正确签名的 APK"},
+        {1,  "基础 Hook",      "Hook ActivityThread.sPackageManager\n替换 PackageInfo 签名数组"},
+        {2,  "增强绕过",       "Level 1 + PackageInfo.CREATOR 代理\n+ 拦截 Parcel 反序列化签名"},
+        {3,  "完整绕过(推荐)", "Level 2 + Native openat Hook\n+ LoadedApk 字段修改 + 缓存清理\n覆盖 PM/IO/Parcel/Native 全层级"},
+    };
+
     private File targetFile;
     private final List<File> moduleFiles = new ArrayList<>();
     private TextView tvStatus, tvLog;
     private final StringBuilder logs = new StringBuilder();
     private SharedPreferences prefs;
-    private int sigBypassLevel = 3; // 默认完整绕过
+    private int sigBypassLevel = 3;
     private boolean debuggable = false;
     private boolean overrideVersion = false;
+    // 记录选中卡片引用用于 UI 更新
+    private final List<LinearLayout> sigCards = new ArrayList<>();
+    private final List<TextView> sigCardTitles = new ArrayList<>();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -78,19 +83,18 @@ public class MainActivity extends Activity {
             sigBypassLevel = prefs.getInt("sig_bypass_level", 3);
             buildAllUI();
             updateAllStatus();
-            log("LSPatch v0.8 就绪 | 输出未签名 APK，自行签名");
+            log("LSPatch v0.8 | 输出未签名 APK，自行签名");
             requestStoragePermission();
         } catch (Throwable t) {
             TextView err = new TextView(this);
             err.setText("LSPatch 启动失败:\n" + t.getClass().getName() + "\n" + t.getMessage());
             err.setTextSize(14);
-            err.setTextColor(Color.RED);
             err.setPadding(40, 40, 40, 40);
             setContentView(err);
         }
     }
 
-    // ==================== MD3 UI ====================
+    // ==================== 构造 UI ====================
 
     private void buildAllUI() {
         ScrollView sv = new ScrollView(this);
@@ -102,11 +106,10 @@ public class MainActivity extends Activity {
         sv.addView(root);
         setContentView(sv);
 
-        // ── 标题栏 ──
         addHeader(root);
         addSpace(root, dp(20));
 
-        // ── 状态条 ──
+        // 状态条
         tvStatus = new TextView(this);
         tvStatus.setTextSize(13);
         tvStatus.setTypeface(Typeface.DEFAULT_BOLD);
@@ -115,44 +118,31 @@ public class MainActivity extends Activity {
         tvStatus.setPadding(dp(16), dp(12), dp(16), dp(12));
         tvStatus.setBackground(roundedBg(C_SURFACE, dp(16)));
         root.addView(tvStatus, matchW());
-
         addSpace(root, dp(16));
 
-        // ── 目标 APK 卡片 ──
-        root.addView(md3Card(
-            "目标 APK",
-            "选择要修补的安装包",
-            C_PRIMARY,
+        // 目标 APK 卡片
+        root.addView(md3Card("目标 APK", "选择要修补的应用安装包", C_PRIMARY,
             new String[]{"从文件选择", "从已安装应用"},
-            new Runnable[]{this::pickTargetFile, this::pickTargetApp}
-        ));
-
+            new Runnable[]{this::pickTargetFile, this::pickTargetApp}));
         addSpace(root, dp(12));
 
-        // ── 模块卡片 ──
-        root.addView(md3Card(
-            "Xposed 模块",
-            "可选，注入 LSPosed 模块",
-            C_SECONDARY,
+        // 模块卡片
+        root.addView(md3Card("Xposed 模块", "可选，注入 LSPosed 模块 APK", 0xFF625B71,
             new String[]{"从文件选择", "从已安装应用"},
-            new Runnable[]{this::pickModuleFile, this::pickModuleApp}
-        ));
-
+            new Runnable[]{this::pickModuleFile, this::pickModuleApp}));
         addSpace(root, dp(12));
 
-        // ── 签名绕过卡片 ──
-        addSigBypassCard(root);
-
+        // 签名绕过卡片 — 修复版
+        addSigBypassCards(root);
         addSpace(root, dp(12));
 
-        // ── 选项卡片 ──
+        // 选项卡片
         addOptionsCard(root);
-
         addSpace(root, dp(24));
 
-        // ── 修补按钮 ──
+        // 修补按钮
         Button btnPatch = new Button(this);
-        btnPatch.setText("开始修补 (未签名输出)");
+        btnPatch.setText("开始修补 (输出未签名 APK)");
         btnPatch.setTextSize(16);
         btnPatch.setTypeface(Typeface.DEFAULT_BOLD);
         btnPatch.setTextColor(C_ON_PRIMARY);
@@ -161,10 +151,9 @@ public class MainActivity extends Activity {
         btnPatch.setAllCaps(false);
         btnPatch.setOnClickListener(v -> doPatch());
         root.addView(btnPatch, matchW());
-
         addSpace(root, dp(20));
 
-        // ── 日志 ──
+        // 日志
         TextView logTitle = new TextView(this);
         logTitle.setText("日志");
         logTitle.setTextSize(13);
@@ -185,13 +174,11 @@ public class MainActivity extends Activity {
         root.addView(tvLog, matchW());
     }
 
-    // ── 标题栏 ──
+    // ── 标题 ──
     private void addHeader(LinearLayout parent) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-
-        // logo
         TextView logo = new TextView(this);
         logo.setText("LS");
         logo.setTextSize(22);
@@ -201,53 +188,43 @@ public class MainActivity extends Activity {
         int s = dp(52);
         logo.setBackground(roundedBg(C_PRIMARY, dp(16)));
         row.addView(logo, new LinearLayout.LayoutParams(s, s));
-
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
         col.setPadding(dp(16), 0, 0, 0);
         row.addView(col, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-
         TextView t = new TextView(this);
         t.setText("LSPatch");
         t.setTextSize(24);
         t.setTypeface(Typeface.DEFAULT_BOLD);
         t.setTextColor(C_ON_SURFACE);
         col.addView(t);
-
         TextView v = new TextView(this);
         v.setText("v0.8  |  非 Root Xposed 框架");
         v.setTextSize(12);
         v.setTextColor(C_ON_SURFACE_V);
         col.addView(v);
-
         parent.addView(row, matchW());
     }
 
-    // ── MD3 卡片 (含两个按钮) ──
+    // ── MD3 卡片 (两个按钮) ──
     private LinearLayout md3Card(String title, String subtitle, int accentColor,
                                   String[] btnLabels, Runnable[] actions) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setBackground(roundedBg(C_SURFACE, dp(16)));
         card.setPadding(dp(16), dp(16), dp(16), dp(16));
-
-        // 标题
         TextView tv = new TextView(this);
         tv.setText(title);
         tv.setTextSize(14);
         tv.setTypeface(Typeface.DEFAULT_BOLD);
         tv.setTextColor(C_ON_SURFACE);
         card.addView(tv);
-
-        // 副标题
         TextView st = new TextView(this);
         st.setText(subtitle);
         st.setTextSize(11);
         st.setTextColor(C_ON_SURFACE_V);
         st.setPadding(0, dp(2), 0, dp(12));
         card.addView(st);
-
-        // 按钮行
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         for (int i = 0; i < btnLabels.length; i++) {
@@ -260,89 +237,99 @@ public class MainActivity extends Activity {
             b.setPadding(dp(16), dp(10), dp(16), dp(10));
             final int idx = i;
             b.setOnClickListener(v -> actions[idx].run());
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
             if (i == 0) lp.rightMargin = dp(8);
             row.addView(b, lp);
         }
         card.addView(row, matchW());
-
         return card;
     }
 
-    // ── 签名绕过卡片 ──
-    private void addSigBypassCard(LinearLayout parent) {
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setBackground(roundedBg(C_SURFACE, dp(16)));
-        card.setPadding(dp(16), dp(16), dp(16), dp(16));
+    // ── 签名绕过卡片 (点击选择，单个互斥) ──
+    private void addSigBypassCards(LinearLayout parent) {
+        LinearLayout outer = new LinearLayout(this);
+        outer.setOrientation(LinearLayout.VERTICAL);
+        outer.setBackground(roundedBg(C_SURFACE, dp(16)));
+        outer.setPadding(dp(16), dp(16), dp(16), dp(16));
 
         TextView tv = new TextView(this);
         tv.setText("签名校验绕过");
         tv.setTextSize(14);
         tv.setTypeface(Typeface.DEFAULT_BOLD);
         tv.setTextColor(C_ON_SURFACE);
-        card.addView(tv);
+        outer.addView(tv);
 
         TextView st = new TextView(this);
-        st.setText("绕过应用签名校验，推荐使用级别 3");
+        st.setText("选择绕过级别 — 注入 config.json 控制 native + Java 层 Hook");
         st.setTextSize(11);
         st.setTextColor(C_ON_SURFACE_V);
-        st.setPadding(0, dp(2), 0, dp(12));
-        card.addView(st);
+        st.setPadding(0, dp(2), 0, dp(14));
+        outer.addView(st);
 
-        String[] opts = {
-            "级别 0  ·  禁用 — 不绕过任何校验",
-            "级别 1  ·  基础 — Hook PackageManager 签名检查",
-            "级别 2  ·  增强 — PM + 文件 I/O 层双重绕过",
-            "级别 3  ·  完整 — 全层级绕过 (推荐)",
-        };
-        String[] descs = {
-            "适用于已正确签名的 APK",
-            "拦截 PackageManager.getPackageInfo 等 API",
-            "额外拦截 APK 文件读取时的签名验证",
-            "PM + IO + Native 层全覆盖，兼容性最强",
-        };
+        sigCards.clear();
+        sigCardTitles.clear();
 
-        RadioGroup rg = new RadioGroup(this);
-        rg.setOrientation(LinearLayout.VERTICAL);
+        for (int i = 0; i < SIG_LEVELS.length; i++) {
+            final int idx = (int) SIG_LEVELS[i][0];
+            String title = "Lv" + idx + "  " + (String) SIG_LEVELS[i][1];
+            String desc = (String) SIG_LEVELS[i][2];
 
-        for (int i = 0; i < opts.length; i++) {
-            LinearLayout row = new LinearLayout(this);
-            row.setOrientation(LinearLayout.VERTICAL);
-            row.setPadding(dp(4), dp(6), 0, dp(6));
+            LinearLayout entry = new LinearLayout(this);
+            entry.setOrientation(LinearLayout.VERTICAL);
+            entry.setPadding(dp(12), dp(10), dp(12), dp(10));
+            entry.setBackground(roundedBg(C_BG, dp(12)));
 
-            RadioButton rb = new RadioButton(this);
-            rb.setId(i);
-            rb.setText(opts[i]);
-            rb.setTextSize(13);
-            rb.setTextColor(C_ON_SURFACE);
-            if (i == sigBypassLevel) rb.setChecked(true);
+            TextView et = new TextView(this);
+            et.setText(title);
+            et.setTextSize(13);
+            et.setTypeface(Typeface.DEFAULT_BOLD);
+            et.setTextColor(C_ON_SURFACE);
+            entry.addView(et);
 
-            TextView desc = new TextView(this);
-            desc.setText(descs[i]);
-            desc.setTextSize(10);
-            desc.setTextColor(C_ON_SURFACE_V);
-            desc.setPadding(dp(32), dp(2), 0, 0);
+            TextView ed = new TextView(this);
+            ed.setText(desc);
+            ed.setTextSize(10);
+            ed.setTextColor(C_ON_SURFACE_V);
+            ed.setPadding(0, dp(4), 0, 0);
+            entry.addView(ed);
 
-            row.addView(rb);
-            row.addView(desc);
-            rg.addView(row);
+            sigCards.add(entry);
+            sigCardTitles.add(et);
+
+            entry.setOnClickListener(v -> selectSigLevel(idx));
+
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.bottomMargin = dp(8);
+            outer.addView(entry, lp);
         }
 
-        rg.setOnCheckedChangeListener((group, id) -> {
-            sigBypassLevel = id;
-            prefs.edit().putInt("sig_bypass_level", sigBypassLevel).apply();
-        });
-        card.addView(rg);
+        // 选中当前级别
+        selectSigLevelUI(sigBypassLevel);
 
-        addSpace(card, dp(8));
+        addSpace(outer, dp(8));
+
         TextView hint = new TextView(this);
-        hint.setText("⚠ 注入原签名副本到 config，确保绕过生效");
+        hint.setText("config.json 注入 originalSignature (原签名 Base64) + sigBypassLevel");
         hint.setTextSize(10);
         hint.setTextColor(C_ACCENT_WARN);
-        card.addView(hint);
+        outer.addView(hint);
 
-        parent.addView(card, matchW());
+        parent.addView(outer, matchW());
+    }
+
+    private void selectSigLevel(int level) {
+        sigBypassLevel = level;
+        prefs.edit().putInt("sig_bypass_level", level).apply();
+        selectSigLevelUI(level);
+    }
+
+    private void selectSigLevelUI(int level) {
+        for (int i = 0; i < sigCards.size(); i++) {
+            int cardLevel = (int) SIG_LEVELS[i][0];
+            boolean sel = (cardLevel == level);
+            sigCards.get(i).setBackground(roundedBg(sel ? C_SCONTAINER : C_BG, dp(12)));
+            sigCardTitles.get(i).setTextColor(sel ? C_PRIMARY : C_ON_SURFACE);
+        }
     }
 
     // ── 选项卡片 ──
@@ -351,11 +338,9 @@ public class MainActivity extends Activity {
         card.setOrientation(LinearLayout.VERTICAL);
         card.setBackground(roundedBg(C_SURFACE, dp(16)));
         card.setPadding(0, dp(4), 0, dp(4));
-
         card.addView(toggleRow("Debuggable 模式", "允许调试修补后的应用", b -> debuggable = b));
         card.addView(md3Divider());
         card.addView(toggleRow("允许降级安装", "覆盖安装更低版本号", b -> overrideVersion = b));
-
         parent.addView(card, matchW());
     }
 
@@ -364,23 +349,19 @@ public class MainActivity extends Activity {
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(dp(16), dp(12), dp(16), dp(12));
-
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
         row.addView(col, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-
         TextView tv = new TextView(this);
         tv.setText(name);
         tv.setTextSize(14);
         tv.setTextColor(C_ON_SURFACE);
         col.addView(tv);
-
         TextView dv = new TextView(this);
         dv.setText(desc);
         dv.setTextSize(10);
         dv.setTextColor(C_ON_SURFACE_V);
         col.addView(dv);
-
         final boolean[] state = {false};
         Button sw = new Button(this);
         sw.setText("关");
@@ -391,19 +372,11 @@ public class MainActivity extends Activity {
         sw.setPadding(dp(20), dp(8), dp(20), dp(8));
         sw.setOnClickListener(v -> {
             state[0] = !state[0];
-            if (state[0]) {
-                sw.setText("开");
-                sw.setTextColor(C_ON_PRIMARY);
-                sw.setBackground(roundedBg(C_PRIMARY, dp(20)));
-            } else {
-                sw.setText("关");
-                sw.setTextColor(C_ON_SURFACE_V);
-                sw.setBackground(roundedBg(C_BG, dp(20)));
-            }
+            if (state[0]) { sw.setText("开"); sw.setTextColor(C_ON_PRIMARY); sw.setBackground(roundedBg(C_PRIMARY, dp(20))); }
+            else { sw.setText("关"); sw.setTextColor(C_ON_SURFACE_V); sw.setBackground(roundedBg(C_BG, dp(20))); }
             onChange.accept(state[0]);
         });
         row.addView(sw);
-
         return row;
     }
 
@@ -430,27 +403,19 @@ public class MainActivity extends Activity {
                 if (path == null) return;
                 File f = new File(path);
                 if (!f.exists()) { toast("文件不存在"); return; }
-                if (req == REQ_TARGET_APP) {
-                    targetFile = copyIn(f, "target.apk");
-                    log("✓ " + f.getName());
-                } else {
-                    File m = copyIn(f, "module-" + (moduleFiles.size() + 1) + ".apk");
-                    if (m != null) { moduleFiles.add(m); log("✓ " + f.getName()); }
-                }
+                if (req == REQ_TARGET_APP) { targetFile = copyIn(f, "target.apk"); log("✓ " + f.getName()); }
+                else { File m = copyIn(f, "module-" + (moduleFiles.size()+1) + ".apk"); if (m != null) { moduleFiles.add(m); log("✓ " + f.getName()); } }
                 updateAllStatus();
                 return;
             }
-            // 文件选择
             if (data == null || data.getData() == null) return;
-            String name = (req == REQ_TARGET_FILE) ? "target.apk" : "module-" + (moduleFiles.size() + 1) + ".apk";
+            String name = (req == REQ_TARGET_FILE) ? "target.apk" : "module-" + (moduleFiles.size()+1) + ".apk";
             File saved = saveTemp(data.getData(), name);
             if (saved == null) { toast("无法读取"); return; }
             if (req == REQ_TARGET_FILE) { targetFile = saved; log("✓ " + saved.getName()); }
             else { moduleFiles.add(saved); log("✓ " + saved.getName()); }
             updateAllStatus();
-        } catch (Throwable t) {
-            toast("错误: " + t.getMessage());
-        }
+        } catch (Throwable t) { toast("错误: " + t.getMessage()); }
     }
 
     private File copyIn(File src, String name) {
@@ -478,9 +443,7 @@ public class MainActivity extends Activity {
     }
 
     private void updateAllStatus() {
-        if (tvStatus != null) {
-            tvStatus.setText("目标: " + (targetFile == null ? "(未选择)" : targetFile.getName()) + "  |  模块: " + moduleFiles.size() + " 个");
-        }
+        if (tvStatus != null) tvStatus.setText("目标: " + (targetFile==null?"(未选择)":targetFile.getName()) + "  |  模块: " + moduleFiles.size() + " 个");
     }
 
     // ==================== 修补 ====================
@@ -492,33 +455,36 @@ public class MainActivity extends Activity {
                 log("── LSPatch v0.8 ──");
                 log("目标: " + targetFile.getName());
                 log("模块: " + moduleFiles.size() + " 个");
-                log("绕过级别: " + sigBypassLevel + "  Debug: " + debuggable + "  降级: " + overrideVersion);
-                log("签名: 跳过 (输出未签名 APK)");
+                log("绕过级别: Lv" + sigBypassLevel);
+                log("  技术栈: " + getBypassDesc(sigBypassLevel));
+                log("签名策略: 输出未签名 APK");
 
                 ApkPatchEngine engine = new ApkPatchEngine(MainActivity.this);
                 File[] mods = moduleFiles.toArray(new File[0]);
                 final File output = engine.patch(targetFile, mods, debuggable, overrideVersion,
                     sigBypassLevel, MainActivity.this::log);
 
-                log("文件: " + output.getAbsolutePath());
-
+                log("输出: " + output.getAbsolutePath());
                 new Handler(Looper.getMainLooper()).post(() ->
                     new AlertDialog.Builder(MainActivity.this)
                         .setTitle("修补完成")
                         .setMessage("输出未签名 APK:\n" + output.getAbsolutePath() + "\n\n请用 apksigner / MT 管理器签名后安装")
                         .setPositiveButton("分享", (d, w) -> shareApk(output))
                         .setNegativeButton("关闭", null)
-                        .show()
-                );
+                        .show());
             } catch (final Throwable e) {
-                log("❌ 失败: " + e.getMessage());
+                log("✗ 失败: " + e.getMessage());
                 new Handler(Looper.getMainLooper()).post(() ->
                     new AlertDialog.Builder(MainActivity.this)
                         .setTitle("错误").setMessage(e.getMessage())
-                        .setPositiveButton("确定", null).show()
-                );
+                        .setPositiveButton("确定", null).show());
             }
         }).start();
+    }
+
+    private String getBypassDesc(int level) {
+        for (Object[] lv : SIG_LEVELS) if ((int)lv[0] == level) return (String) lv[2];
+        return "未知";
     }
 
     private void shareApk(File apk) {
@@ -539,20 +505,17 @@ public class MainActivity extends Activity {
     private void requestStoragePermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (!Environment.isExternalStorageManager()) {
-                try {
-                    startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                        Uri.parse("package:" + getPackageName())));
-                } catch (Exception ignored) {}
+                try { startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:" + getPackageName()))); }
+                catch (Exception ignored) {}
             }
         }
     }
 
-    // ==================== MD3 工具方法 ====================
+    // ==================== MD3 工具 ====================
 
-    /** 安全的圆角背景 (ShapeDrawable，避免 GradientDrawable 崩溃) */
     private ShapeDrawable roundedBg(int color, float radiusDp) {
         float r = dp(radiusDp);
-        float[] radii = {r, r, r, r, r, r, r, r};
+        float[] radii = {r,r,r,r,r,r,r,r};
         ShapeDrawable sd = new ShapeDrawable(new RoundRectShape(radii, null, null));
         sd.getPaint().setColor(color);
         return sd;
@@ -562,8 +525,7 @@ public class MainActivity extends Activity {
         View v = new View(this);
         v.setBackgroundColor(C_OUTLINE);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1));
-        lp.leftMargin = dp(16);
-        lp.rightMargin = dp(16);
+        lp.leftMargin = dp(16); lp.rightMargin = dp(16);
         v.setLayoutParams(lp);
         return v;
     }

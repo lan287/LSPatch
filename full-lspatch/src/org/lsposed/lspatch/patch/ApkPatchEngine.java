@@ -73,7 +73,6 @@ public class ApkPatchEngine {
             // 2. 注入 LSPatch 核心资源
             injectAsset(zos, "assets/lspatch/metaloader.dex", "metaloader.dex");
             injectAsset(zos, "assets/lspatch/loader.dex", "loader.dex");
-            injectAsset(zos, "assets/lspatch/sigkiller.dex", "sigkiller.dex");
 
             for (String arch : new String[]{"arm64-v8a", "armeabi-v7a", "x86", "x86_64"}) {
                 try {
