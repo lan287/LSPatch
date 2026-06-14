@@ -17,11 +17,16 @@ public class ApkPatchEngine {
     private static final String TAG = "LSPatch-Engine";
     private final Context ctx;
 
+    // 签名绕过级别 (与 LSPatch Constants 对齐)
+    public static final int SIGBYPASS_DISABLE = 0;
+    public static final int SIGBYPASS_PM = 1;         // PackageManager 层
+    public static final int SIGBYPASS_PM_OPENAT = 2;  // PM + libc openat
+    public static final int SIGBYPASS_MAX = 3;         // 完整绕过
+
     public ApkPatchEngine(Context ctx) { this.ctx = ctx; }
 
     /**
-     * 修补目标 APK — 注入 LSPatch 框架，不签名
-     * 用户后续自行用 apksigner 或 MT 管理器签名
+     * 修补目标 APK — 注入 LSPatch 框架 + SigKiller，不签名
      */
     public File patch(File target, File[] modules, boolean debuggable, boolean overrideVersion,
                        int sigBypassLevel, ApkSigner.LogCallback cb) throws Exception {
@@ -29,12 +34,16 @@ public class ApkPatchEngine {
         if (cb != null) cb.log("读取: " + target.getName());
         long t0 = System.currentTimeMillis();
 
-        // 提取原 APK 签名 (用于签名绕过)
+        // 提取原 APK 签名证书 (用于签名绕过)
         String origSig = extractOriginalSignature(target);
+        if (cb != null && origSig != null) {
+            cb.log("✓ 提取原签名: " + origSig.substring(0, Math.min(30, origSig.length())) + "...");
+        }
 
-        // 1. 流式复制目标 APK 到临时文件 (去除旧签名)
+        // 1. 流式复制目标 APK → 临时文件 (去除旧签名)
         File output = new File(ctx.getExternalFilesDir(null), "patch-" + System.currentTimeMillis() + ".apk");
         int entryCount = 0;
+
         try (ZipFile zf = new ZipFile(target);
              ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(output))) {
 
@@ -44,7 +53,6 @@ public class ApkPatchEngine {
                 ZipEntry e = entries.nextElement();
                 String name = e.getName();
                 if (e.isDirectory()) continue;
-                // 跳过旧签名文件
                 if (name.startsWith("META-INF/") &&
                     (name.endsWith(".SF") || name.endsWith(".MF") ||
                      name.endsWith(".RSA") || name.endsWith(".DSA") || name.endsWith(".EC")))
@@ -62,15 +70,17 @@ public class ApkPatchEngine {
                 entryCount++;
             }
 
-            // 2. 注入 LSPatch 资源
+            // 2. 注入 LSPatch 核心资源
             injectAsset(zos, "assets/lspatch/metaloader.dex", "metaloader.dex");
             injectAsset(zos, "assets/lspatch/loader.dex", "loader.dex");
+            injectAsset(zos, "assets/lspatch/sigkiller.dex", "sigkiller.dex");
+
             for (String arch : new String[]{"arm64-v8a", "armeabi-v7a", "x86", "x86_64"}) {
                 try {
                     byte[] so = readAsset("so/" + arch + "/liblspatch.so");
                     addBytesToZip(zos, "assets/lspatch/so/" + arch + "/liblspatch.so", so);
-                    if (cb != null) cb.log("  ✓ " + arch + " lib");
                     addBytesToZip(zos, "lib/" + arch + "/liblspatch.so", so);
+                    if (cb != null) cb.log("  ✓ " + arch + " lib");
                 } catch (Exception ignored) {}
             }
 
@@ -86,16 +96,21 @@ public class ApkPatchEngine {
                 }
             }
 
-            // 4. 生成增强 config.json
+            // 4. 生成 config.json (匹配 PatchConfig 格式)
             String config = buildConfig(debuggable, overrideVersion, sigBypassLevel, moduleCount, origSig);
             addBytesToZip(zos, "assets/lspatch/config.json", config.getBytes("UTF-8"));
+
+            if (cb != null) {
+                cb.log("配置: sigBypassLevel=" + sigBypassLevel + " debug=" + debuggable
+                    + " override=" + overrideVersion + " modules=" + moduleCount);
+            }
         }
 
         if (cb != null) {
-            cb.log("流式处理完成: " + entryCount + " 条目, " + formatSize(output.length()));
+            cb.log("流式处理: " + entryCount + " 条目, " + formatSize(output.length()));
         }
 
-        // 5. 重命名为最终输出
+        // 5. 重命名输出
         String baseName = target.getName().replaceAll("\\.apk$", "");
         String suffix = "-LSPatched-v0.8";
         if (sigBypassLevel > 0) suffix += "-sigLv" + sigBypassLevel;
@@ -107,13 +122,16 @@ public class ApkPatchEngine {
             long elapsed = System.currentTimeMillis() - t0;
             cb.log("✓ 修补完成 (" + (elapsed / 1000.0) + "s)");
             cb.log("⚠ 输出未签名，请用 apksigner 签名后安装");
-            cb.log("  命令: apksigner sign --ks key.jks output.apk");
+            cb.log("  apksigner sign --ks key.jks output.apk");
         }
         return output;
     }
 
+    // ==================== 签名提取 ====================
+
     /**
-     * 从原 APK 提取签名证书，用于签名绕过
+     * 从原 APK 提取签名证书 (Base64 DER)，用于绕过
+     * 查找 META-INF/*.RSA 或 *.DSA 或 *.EC
      */
     private String extractOriginalSignature(File apk) {
         try (ZipFile zf = new ZipFile(apk)) {
@@ -121,7 +139,8 @@ public class ApkPatchEngine {
             while (entries.hasMoreElements()) {
                 ZipEntry e = entries.nextElement();
                 String name = e.getName();
-                if (name.startsWith("META-INF/") && name.endsWith(".RSA")) {
+                if (name.startsWith("META-INF/") &&
+                    (name.endsWith(".RSA") || name.endsWith(".DSA") || name.endsWith(".EC"))) {
                     try (InputStream is = zf.getInputStream(e);
                          ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
                         byte[] buf = new byte[8192]; int n;
@@ -134,6 +153,20 @@ public class ApkPatchEngine {
         return null;
     }
 
+    // ==================== Config 生成 ====================
+
+    /**
+     * 生成 config.json — 匹配 LSPatch PatchConfig 格式
+     *
+     * PatchConfig 字段:
+     *   boolean useManager       — 是否使用 Manager 模式
+     *   boolean debuggable       — 是否可调试
+     *   boolean overrideVersionCode — 允许降级安装
+     *   int sigBypassLevel       — 签名绕过级别 (0-3)
+     *   String originalSignature — 原签名 Base64 (用于绕过)
+     *   String appComponentFactory — AppComponentFactory 类名
+     *   LSPConfig lspConfig      — LSP 核心配置
+     */
     private String buildConfig(boolean debuggable, boolean override, int sigBypass,
                                 int moduleCount, String origSig) {
         StringBuilder sb = new StringBuilder();
@@ -142,12 +175,16 @@ public class ApkPatchEngine {
         sb.append("\"debuggable\":").append(debuggable).append(",");
         sb.append("\"overrideVersionCode\":").append(override).append(",");
         sb.append("\"sigBypassLevel\":").append(sigBypass).append(",");
-        sb.append("\"originalSignature\":").append(origSig != null ? "\"" + origSig + "\"" : "null").append(",");
+        if (origSig != null && !origSig.isEmpty()) {
+            sb.append("\"originalSignature\":\"").append(origSig).append("\",");
+        } else {
+            sb.append("\"originalSignature\":null,");
+        }
         sb.append("\"appComponentFactory\":\"org.lsposed.lspatch.metaloader.LSPAppComponentFactoryStub\",");
         sb.append("\"embeddedModules\":").append(moduleCount).append(",");
         sb.append("\"lspConfig\":{");
         sb.append("\"API_CODE\":93,");
-        sb.append("\"VERSION_CODE\":355,");
+        sb.append("\"VERSION_CODE\":356,");
         sb.append("\"VERSION_NAME\":\"0.8\",");
         sb.append("\"CORE_VERSION_CODE\":93,");
         sb.append("\"CORE_VERSION_NAME\":\"1.0.3\"");
